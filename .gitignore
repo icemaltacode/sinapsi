@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Build outputs
+.serverless/
+.build/
+dist/
+
+# Local tooling
+.env
+frontend/.env.local
+.esbuild
+.DS_Store
+docs

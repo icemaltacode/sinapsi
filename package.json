@@ -1,0 +1,45 @@
+{
+  "name": "sinapsi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Serverless backend for the Sinapsi MVP",
+  "license": "GPL-3.0-only",
+  "author": "Keith Vassallo",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "deploy": "serverless deploy",
+    "remove": "serverless remove",
+    "package": "serverless package",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.913.0",
+    "@aws-sdk/client-dynamodb": "^3.913.0",
+    "@aws-sdk/client-s3": "^3.913.0",
+    "@aws-sdk/client-secrets-manager": "^3.913.0",
+    "@aws-sdk/client-sns": "^3.913.0",
+    "@aws-sdk/lib-dynamodb": "^3.913.0",
+    "@aws-sdk/s3-request-presigner": "^3.913.0",
+    "openai": "^4.67.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.9.1",
+    "@types/aws-lambda": "^8.10.156",
+    "@types/node": "^24.8.1",
+    "@typescript-eslint/eslint-plugin": "^8.46.1",
+    "@typescript-eslint/parser": "^8.46.1",
+    "eslint": "^9.38.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-import-resolver-typescript": "^4.4.4",
+    "eslint-plugin-import": "^2.32.0",
+    "globals": "^15.11.0",
+    "serverless": "^4.21.1",
+    "serverless-esbuild": "^1.55.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

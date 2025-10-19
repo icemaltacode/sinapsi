@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 216 71% 4%;
+  --foreground: 213 31% 91%;
+  --card: 222 47% 11%;
+  --card-foreground: 213 31% 91%;
+  --popover: 221 39% 11%;
+  --popover-foreground: 213 31% 91%;
+  --primary: 349 79% 63%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 230 45% 25%;
+  --secondary-foreground: 217 33% 91%;
+  --muted: 226 25% 18%;
+  --muted-foreground: 215 20% 65%;
+  --accent: 349 79% 63%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 62% 45%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 220 35% 23%;
+  --input: 218 38% 21%;
+  --ring: 349 79% 63%;
+  --radius: 14px;
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    sans-serif;
+}
+
+.light {
+  --background: 0 0% 100%;
+  --foreground: 230 43% 14%;
+  --card: 0 0% 100%;
+  --card-foreground: 230 43% 14%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 230 43% 14%;
+  --primary: 349 79% 63%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 230 45% 25%;
+  --secondary-foreground: 0 0% 100%;
+  --muted: 226 25% 90%;
+  --muted-foreground: 230 27% 35%;
+  --accent: 230 55% 44%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 84% 53%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 230 20% 85%;
+  --input: 230 20% 85%;
+  --ring: 349 79% 63%;
+}
+
+* {
+  @apply border-border;
+}
+
+body {
+  @apply min-h-screen bg-background text-foreground antialiased;
+}
