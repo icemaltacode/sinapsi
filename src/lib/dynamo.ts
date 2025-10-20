@@ -69,11 +69,11 @@ export const keys = {
     gsi1pk: 'SESSION_EVENT',
     gsi1sk: `${TENANT_ID}#${sessionId}#${isoTimestamp}`
   }),
-  sessionSummary: (sessionId: string): KeyAttributes => ({
-    pk: join('SESSION', sessionId),
-    sk: 'SUMMARY',
-    gsi1pk: 'SESSION_SUMMARY',
-    gsi1sk: `${TENANT_ID}#${sessionId}`
+  sessionSummary: (userId: string, sessionId: string): KeyAttributes => ({
+    pk: join('USER', userId),
+    sk: `SESSION#${sessionId}`,
+    gsi1pk: 'SESSION',
+    gsi1sk: `${TENANT_ID}#${userId}#${sessionId}`
   }),
   usageMonthly: (yyyymm: string): KeyAttributes => ({
     pk: join('TENANT'),
@@ -147,6 +147,8 @@ export interface ProviderConfigItem extends BaseItem {
   provider: string;
   secretId: string;
   label?: string;
+  providerType?: string;
+  instanceName?: string;
   status: 'active' | 'revoked' | 'pending';
   lastRotatedAt?: string;
 }
@@ -166,19 +168,29 @@ export interface SessionEventItem extends BaseItem {
   entityType: 'SESSION_EVENT';
   sessionId: string;
   eventType: 'message' | 'system' | 'tool';
+  messageId: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   provider?: string;
   tokensIn?: number;
   tokensOut?: number;
+  createdBy: string;
 }
 
 export interface SessionSummaryItem extends BaseItem {
   entityType: 'SESSION_SUMMARY';
   sessionId: string;
+  ownerUserId: string;
   title?: string;
   lastInteractionAt: string;
   participants: string[];
+  providerId: string;
+  providerType: string;
+  providerInstanceName: string;
+  model: string;
+  pinned: boolean;
+  status: 'active' | 'archived';
+  liveConnectionId?: string;
 }
 
 export interface UsageMonthlyItem extends BaseItem {

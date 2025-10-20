@@ -1,14 +1,16 @@
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
 
 import { AuthProvider, useAuth } from './context/auth-context';
 import { ThemeProvider } from './components/theme-provider';
 import { LoginView } from './routes/login-view';
 import { NewPasswordView } from './routes/new-password-view';
-import { TokenConsole } from './routes/token-console';
 import { AdminLayout } from './layouts/admin-layout';
 import { AdminUsersPage } from './routes/admin/users-page';
+import { AdminProvidersPage } from './routes/admin/providers-page';
 import { AccountPage } from './routes/account-page';
 import { AppHeader } from './components/layout/header';
+import { HomeLayout } from './layouts/home-layout';
+import { HomePage } from './routes/home-page';
 
 function RootRoute() {
   const { stage } = useAuth();
@@ -31,7 +33,11 @@ function RootRoute() {
     return <NewPasswordView />;
   }
 
-  return <TokenConsole />;
+  return (
+    <HomeLayout>
+      <HomePage />
+    </HomeLayout>
+  );
 }
 
 function AdminRoute() {
@@ -47,7 +53,7 @@ function AdminRoute() {
 
   return (
     <AdminLayout>
-      <AdminUsersPage />
+      <Outlet />
     </AdminLayout>
   );
 }
@@ -75,8 +81,10 @@ function AccountRoute() {
         navLinks={[{ label: 'Home', to: '/' }, ...(isAdmin ? [{ label: 'Admin', to: '/admin' }] : [])]}
       />
 
-      <main className='container py-10'>
-        <AccountPage />
+      <main className='flex w-full justify-center px-3 py-10 md:px-6'>
+        <section className='w-full max-w-4xl rounded-2xl border border-border/40 bg-card/70 p-6 shadow-xl backdrop-blur'>
+          <AccountPage />
+        </section>
       </main>
     </div>
   );
@@ -89,7 +97,10 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route path='/' element={<RootRoute />} />
-            <Route path='/admin' element={<AdminRoute />} />
+            <Route path='/admin' element={<AdminRoute />}>
+              <Route index element={<AdminUsersPage />} />
+              <Route path='providers' element={<AdminProvidersPage />} />
+            </Route>
             <Route path='/account' element={<AccountRoute />} />
             <Route path='*' element={<Navigate to='/' replace />} />
           </Routes>

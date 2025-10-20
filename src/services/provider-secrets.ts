@@ -1,5 +1,6 @@
 import {
   CreateSecretCommand,
+  DeleteSecretCommand,
   GetSecretValueCommand,
   PutSecretValueCommand
 } from '@aws-sdk/client-secrets-manager';
@@ -76,4 +77,23 @@ export const ensureProviderConfigExists = async (provider: string, secretId: str
   if (!existing) {
     await saveProviderConfig({ provider, secretId, status: 'active' });
   }
+};
+
+export const deleteProviderApiKey = async (provider: string) => {
+  const secretId = buildSecretName(provider);
+
+  try {
+    await secretsManager.send(
+      new DeleteSecretCommand({
+        SecretId: secretId,
+        ForceDeleteWithoutRecovery: true
+      })
+    );
+  } catch (error) {
+    if ((error as { name?: string }).name !== 'ResourceNotFoundException') {
+      throw error;
+    }
+  }
+
+  cache.delete(secretId);
 };

@@ -1,4 +1,4 @@
-import { Menu } from 'lucide-react';
+import { PanelRightOpen } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import {
   DropdownMenu,
@@ -45,8 +45,17 @@ export function AppHeader({
         className
       )}
     >
-      <div className='container flex h-16 items-center justify-between gap-4'>
+      <div className='flex h-16 w-full items-center justify-between gap-4 px-3 md:px-6'>
         <div className='flex items-center gap-3'>
+          <Link to='/' className='flex items-center gap-2 text-primary-foreground'>
+            <div className='flex h-9 w-9 items-center justify-center rounded-lg bg-white/15 font-semibold tracking-wide text-white shadow-inner shadow-black/40'>
+              S
+            </div>
+            <span className='text-lg font-semibold tracking-tight'>Sinapsi</span>
+          </Link>
+        </div>
+
+        <div className='flex items-center gap-2 md:gap-4'>
           <Sheet>
             <SheetTrigger asChild>
               <Button
@@ -54,7 +63,7 @@ export function AppHeader({
                 size='icon'
                 className='text-primary-foreground md:hidden'
               >
-                <Menu className='h-5 w-5' />
+                <PanelRightOpen className='h-5 w-5' />
                 <span className='sr-only'>Open navigation</span>
               </Button>
             </SheetTrigger>
@@ -77,15 +86,6 @@ export function AppHeader({
             </SheetContent>
           </Sheet>
 
-          <Link to='/' className='flex items-center gap-2 text-primary-foreground'>
-            <div className='flex h-9 w-9 items-center justify-center rounded-lg bg-white/15 font-semibold tracking-wide text-white shadow-inner shadow-black/40'>
-              S
-            </div>
-            <span className='text-lg font-semibold tracking-tight'>Sinapsi</span>
-          </Link>
-        </div>
-
-        <div className='flex items-center gap-2 md:gap-4'>
           {showAdmin ? (
             <Button
               asChild

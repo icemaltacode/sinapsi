@@ -45,7 +45,7 @@ export const profile: APIGatewayProxyHandlerV2 = async (event) => {
     const claims = (event.requestContext as RequestContextWithAuthorizer).authorizer?.jwt?.claims ?? {};
     const preferredUserId = claims.preferred_username as string | undefined;
     const emailClaim = claims.email as string | undefined;
-    const displayNameClaim = (claims.name as string | undefined) ?? emailClaim;
+    const displayNameClaim = ((claims.name as string | undefined) ?? emailClaim) ?? 'Sinapsi User';
     const roleClaim = (claims['custom:role'] as string | undefined) === 'admin' ? 'admin' : 'student';
     const firstNameClaim = claims.given_name as string | undefined;
     const lastNameClaim = claims.family_name as string | undefined;

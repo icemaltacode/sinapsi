@@ -1,11 +1,22 @@
+import { randomUUID } from 'node:crypto';
+
 import type { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 
-import type { UserProfileItem } from '../lib/dynamo';
+import type { ProviderConfigItem, UserProfileItem } from '../lib/dynamo';
 import { DEFAULT_USER_TEMP_PASSWORD } from '../lib/env';
 import { badRequest, conflict, created, ok, serverError } from '../lib/response';
-import { saveProviderConfig } from '../repositories/providers';
+import {
+  deleteProviderConfig,
+  getProviderConfig,
+  listProviderConfigs,
+  saveProviderConfig
+} from '../repositories/providers';
 import { upsertQuota } from '../repositories/quotas';
-import { storeProviderApiKey } from '../services/provider-secrets';
+import {
+  deleteProviderApiKey,
+  getProviderApiKey,
+  storeProviderApiKey
+} from '../services/provider-secrets';
 import {
   createUserWithDefaults,
   deleteUserAccount,
@@ -14,10 +25,16 @@ import {
   type AdminCreateUserInput
 } from '../services/user-management';
 
-interface ProviderSecretPayload {
-  provider: string;
+interface ProviderCreatePayload {
+  providerType: string;
+  instanceName: string;
   apiKey: string;
-  label?: string;
+}
+
+interface ProviderUpdatePayload {
+  instanceName?: string;
+  apiKey?: string;
+  status?: 'active' | 'revoked' | 'pending';
 }
 
 interface QuotaPayload {
@@ -63,6 +80,72 @@ const sanitizeUser = (user: UserProfileItem) => ({
 
 const parseJson = <T>(body: string): T => JSON.parse(body);
 
+const PROVIDER_TYPES = new Set(['gpt', 'copilot', 'claude', 'gemini']);
+
+const slugify = (value: string) =>
+  value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-')
+    .slice(0, 64);
+
+const randomSuffix = () => randomUUID().split('-')[0];
+
+const guessProviderType = (config: ProviderConfigItem): string => {
+  if (config.providerType) return config.providerType;
+
+  const id = config.provider.toLowerCase();
+  if (id.includes('openai') || id.includes('gpt')) {
+    return 'gpt';
+  }
+  if (id.includes('claude')) {
+    return 'claude';
+  }
+  if (id.includes('gemini')) {
+    return 'gemini';
+  }
+  if (id.includes('copilot')) {
+    return 'copilot';
+  }
+
+  return 'gpt';
+};
+
+const mapProviderResponse = (config: ProviderConfigItem, apiKey: string) => ({
+  providerId: config.provider,
+  providerType: guessProviderType(config),
+  instanceName: config.instanceName ?? config.label ?? config.provider,
+  status: config.status,
+  apiKey,
+  secretId: config.secretId,
+  createdAt: config.createdAt,
+  updatedAt: config.updatedAt,
+  lastRotatedAt: config.lastRotatedAt ?? null
+});
+
+const generateProviderId = async (providerType: string, instanceName: string) => {
+  const baseInstance = slugify(instanceName);
+  const baseId = baseInstance ? `${providerType}-${baseInstance}` : providerType;
+
+  let candidate = baseId;
+  let attempt = 0;
+  // Ensure uniqueness by appending a short random suffix if needed.
+  // Limit attempts to avoid infinite loops.
+  while ((await getProviderConfig(candidate)) && attempt < 5) {
+    candidate = `${baseId}-${randomSuffix()}`.slice(0, 80);
+    attempt += 1;
+  }
+
+  if (await getProviderConfig(candidate)) {
+    throw new Error('Unable to create a unique provider identifier');
+  }
+
+  return candidate;
+};
+
 export const users: APIGatewayProxyHandlerV2 = async (event) => {
   try {
     if (!event.body) {
@@ -92,30 +175,136 @@ export const users: APIGatewayProxyHandlerV2 = async (event) => {
 
 export const providers: APIGatewayProxyHandlerV2 = async (event) => {
   try {
-    if (!event.body) {
-      return badRequest('Request body is required');
+    const method = event.requestContext.http.method.toUpperCase();
+
+    if (method === 'GET') {
+      const configs = await listProviderConfigs();
+      const items = await Promise.all(
+        configs.map(async (config) => {
+          try {
+            const apiKey = await getProviderApiKey(config.provider);
+            return mapProviderResponse(config, apiKey);
+          } catch (error) {
+            console.error(`admin.providers list failed to fetch key for ${config.provider}`, error);
+            return mapProviderResponse(config, '');
+          }
+        })
+      );
+
+      return ok({ items });
     }
 
-    const payload = parseJson<ProviderSecretPayload>(event.body);
+    if (method === 'POST') {
+      if (!event.body) {
+        return badRequest('Request body is required');
+      }
 
-    if (!payload.provider || !payload.apiKey) {
-      return badRequest('provider and apiKey are required');
+      const payload = parseJson<ProviderCreatePayload>(event.body);
+
+      if (!payload.providerType || !payload.instanceName || !payload.apiKey) {
+        return badRequest('providerType, instanceName and apiKey are required');
+      }
+
+      const providerType = payload.providerType.toLowerCase();
+      if (!PROVIDER_TYPES.has(providerType)) {
+        return badRequest(`providerType must be one of: ${Array.from(PROVIDER_TYPES).join(', ')}`);
+      }
+
+      const instanceName = payload.instanceName.trim();
+      if (!instanceName) {
+        return badRequest('instanceName is required');
+      }
+
+      const apiKey = payload.apiKey.trim();
+      if (!apiKey) {
+        return badRequest('apiKey must not be empty');
+      }
+
+      const providerId = await generateProviderId(providerType, instanceName);
+      const secretId = await storeProviderApiKey(providerId, apiKey);
+      const config = await saveProviderConfig({
+        provider: providerId,
+        secretId,
+        providerType,
+        instanceName,
+        label: instanceName,
+        status: 'active'
+      });
+
+      return ok({
+        item: mapProviderResponse(config, apiKey)
+      });
     }
 
-    const secretId = await storeProviderApiKey(payload.provider, payload.apiKey);
-    const config = await saveProviderConfig({
-      provider: payload.provider,
-      secretId,
-      label: payload.label,
-      status: 'active'
-    });
+    if (method === 'PUT') {
+      const providerId = event.pathParameters?.providerId;
+      if (!providerId) {
+        return badRequest('providerId path parameter is required');
+      }
 
-    return ok({
-      provider: config.provider,
-      secretId: config.secretId,
-      status: config.status,
-      label: config.label
-    });
+      if (!event.body) {
+        return badRequest('Request body is required');
+      }
+
+      const payload = parseJson<ProviderUpdatePayload>(event.body);
+
+      if (!payload.instanceName && !payload.apiKey && !payload.status) {
+        return badRequest('Provide at least one field to update');
+      }
+
+      const existing = await getProviderConfig(providerId);
+      if (!existing) {
+        return badRequest(`Provider ${providerId} not found`);
+      }
+
+      let secretId = existing.secretId;
+      let rotatedKey: string | undefined;
+      if (payload.apiKey !== undefined) {
+        const trimmedKey = payload.apiKey.trim();
+        if (!trimmedKey) {
+          return badRequest('apiKey must not be empty');
+        }
+
+        secretId = await storeProviderApiKey(providerId, trimmedKey);
+        rotatedKey = trimmedKey;
+      }
+
+      const instanceName = payload.instanceName?.trim();
+
+      const config = await saveProviderConfig({
+        provider: providerId,
+        secretId,
+        providerType: existing.providerType,
+        instanceName: instanceName ?? existing.instanceName ?? existing.label,
+        label: instanceName ?? existing.label,
+        status: payload.status ?? existing.status
+      });
+
+      const apiKey = rotatedKey ?? (await getProviderApiKey(providerId));
+
+      return ok({
+        item: mapProviderResponse(config, apiKey)
+      });
+    }
+
+    if (method === 'DELETE') {
+      const providerId = event.pathParameters?.providerId;
+      if (!providerId) {
+        return badRequest('providerId path parameter is required');
+      }
+
+      const existing = await getProviderConfig(providerId);
+      if (!existing) {
+        return ok({ success: true, deleted: false });
+      }
+
+      await deleteProviderApiKey(providerId);
+      await deleteProviderConfig(providerId);
+
+      return ok({ success: true, deleted: true });
+    }
+
+    return badRequest(`Unsupported method ${method}`);
   } catch (error) {
     console.error('admin.providers error', error);
     return serverError(error);

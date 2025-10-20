@@ -1,4 +1,4 @@
-import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 
 import { docClient } from '../lib/clients';
 import { baseItem, keys, touch, type ProviderConfigItem } from '../lib/dynamo';
@@ -10,6 +10,8 @@ export interface SaveProviderConfigInput {
   provider: string;
   secretId: string;
   label?: string;
+  providerType?: string;
+  instanceName?: string;
   status?: ProviderConfigItem['status'];
 }
 
@@ -35,7 +37,9 @@ export const saveProviderConfig = async (
     const updated: ProviderConfigItem = {
       ...touch(existing),
       secretId: input.secretId,
-      label: input.label ?? existing.label,
+      label: input.label ?? input.instanceName ?? existing.label,
+      providerType: input.providerType ?? existing.providerType,
+      instanceName: input.instanceName ?? existing.instanceName ?? input.label ?? existing.label,
       status: input.status ?? existing.status,
       lastRotatedAt: now
     };
@@ -55,7 +59,9 @@ export const saveProviderConfig = async (
     ...keys.providerConfig(input.provider),
     provider: input.provider,
     secretId: input.secretId,
-    label: input.label,
+    label: input.label ?? input.instanceName,
+    providerType: input.providerType,
+    instanceName: input.instanceName ?? input.label,
     status: input.status ?? 'active',
     lastRotatedAt: now
   };
@@ -68,4 +74,30 @@ export const saveProviderConfig = async (
   );
 
   return item;
+};
+
+export const listProviderConfigs = async (): Promise<ProviderConfigItem[]> => {
+  const { pk } = keys.providerConfig('placeholder');
+  const result = await docClient.send(
+    new QueryCommand({
+      TableName: tableName,
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+      ExpressionAttributeValues: {
+        ':pk': pk,
+        ':prefix': 'PROVIDER#'
+      }
+    })
+  );
+
+  return (result.Items as ProviderConfigItem[] | undefined) ?? [];
+};
+
+export const deleteProviderConfig = async (provider: string): Promise<void> => {
+  const key = keys.providerConfig(provider);
+  await docClient.send(
+    new DeleteCommand({
+      TableName: tableName,
+      Key: { pk: key.pk, sk: key.sk }
+    })
+  );
 };
