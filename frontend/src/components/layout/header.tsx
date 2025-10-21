@@ -22,6 +22,7 @@ interface HeaderProps {
   isAdminRoute?: boolean;
   navLinks?: Array<{ label: string; to: string }>;
   avatarUrl?: string;
+  historyToggle?: React.ReactNode;
 }
 
 const gradientBg =
@@ -35,7 +36,8 @@ export function AppHeader({
   adminHref = '/admin',
   isAdminRoute,
   navLinks = [],
-  avatarUrl
+  avatarUrl,
+  historyToggle
 }: HeaderProps) {
   return (
     <header
@@ -45,20 +47,72 @@ export function AppHeader({
         className
       )}
     >
-      <div className='flex h-16 w-full items-center justify-between gap-4 px-3 md:px-6'>
-        <div className='flex items-center gap-3'>
-          <Link to='/' className='flex items-center gap-2 text-primary-foreground'>
-            <div className='flex h-9 w-9 items-center justify-center rounded-lg bg-white/15 font-semibold tracking-wide text-white shadow-inner shadow-black/40'>
+      <div id='header-container' className='flex h-16 w-full items-center justify-between gap-4 px-3 md:px-6'>
+        <div id='header-logo-section' className='flex items-center gap-3'>
+          {historyToggle}
+          <Link id='header-logo-link' to='/' className='flex items-center gap-2 text-primary-foreground'>
+            <div id='header-logo-icon' className='flex h-9 w-9 items-center justify-center rounded-lg bg-white/15 font-semibold tracking-wide text-white shadow-inner shadow-black/40'>
               S
             </div>
-            <span className='text-lg font-semibold tracking-tight'>Sinapsi</span>
+            <span id='header-logo-text' className='text-lg font-semibold tracking-tight'>Sinapsi</span>
           </Link>
         </div>
 
-        <div className='flex items-center gap-2 md:gap-4'>
+        <div id='header-actions-section' className='flex items-center gap-2 md:gap-4'>
+          {showAdmin ? (
+            <Button
+              id='header-admin-button'
+              asChild
+              variant='ghost'
+              className={cn(
+                'hidden rounded-full border border-white/25 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white/90 transition hover:bg-white/20 md:inline-flex',
+                isAdminRoute && 'bg-white/25 text-white'
+              )}
+            >
+              <Link to={adminHref}>Admin</Link>
+            </Button>
+          ) : null}
+
+          <ThemeToggle />
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                id='header-account-button'
+                variant='ghost'
+                className='flex items-center gap-2 rounded-full bg-white/10 pl-3 pr-0 py-1 text-sm font-medium text-white/90 backdrop-blur hover:bg-white/20'
+              >
+                <span id='header-username-text' className='hidden text-right sm:block'>{userName}</span>
+                <div id='header-avatar' className='flex h-9 w-9 items-center justify-center overflow-hidden rounded-full bg-white/20 text-base font-semibold uppercase'>
+                  {avatarUrl ? (
+                    <img src={avatarUrl} alt='Avatar' className='h-full w-full object-cover' />
+                  ) : (
+                    <span>{userName?.slice(0, 2) ?? 'SU'}</span>
+                  )}
+                </div>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent className='w-56' align='end' forceMount>
+              <DropdownMenuLabel className='font-semibold'>Signed in as</DropdownMenuLabel>
+              <p className='px-2 text-sm text-muted-foreground'>{userName}</p>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem asChild className='cursor-pointer'>
+                <Link to='/account'>Account</Link>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className='cursor-pointer text-destructive focus:bg-destructive/10 focus:text-destructive'
+                onSelect={onLogout}
+              >
+                Logout
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           <Sheet>
             <SheetTrigger asChild>
               <Button
+                id='header-mobile-menu-button'
                 variant='ghost'
                 size='icon'
                 className='text-primary-foreground md:hidden'
@@ -85,54 +139,6 @@ export function AppHeader({
               </div>
             </SheetContent>
           </Sheet>
-
-          {showAdmin ? (
-            <Button
-              asChild
-              variant='ghost'
-              className={cn(
-                'hidden rounded-full border border-white/25 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white/90 transition hover:bg-white/20 md:inline-flex',
-                isAdminRoute && 'bg-white/25 text-white'
-              )}
-            >
-              <Link to={adminHref}>Admin</Link>
-            </Button>
-          ) : null}
-
-          <ThemeToggle />
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant='ghost'
-                className='flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-sm font-medium text-white/90 backdrop-blur hover:bg-white/20'
-              >
-                <span className='hidden text-right sm:block'>{userName}</span>
-                <div className='flex h-9 w-9 items-center justify-center overflow-hidden rounded-full bg-white/20 text-base font-semibold uppercase'>
-                  {avatarUrl ? (
-                    <img src={avatarUrl} alt='Avatar' className='h-full w-full object-cover' />
-                  ) : (
-                    <span>{userName?.slice(0, 2) ?? 'SU'}</span>
-                  )}
-                </div>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent className='w-56' align='end' forceMount>
-              <DropdownMenuLabel className='font-semibold'>Signed in as</DropdownMenuLabel>
-              <p className='px-2 text-sm text-muted-foreground'>{userName}</p>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem asChild className='cursor-pointer'>
-                <Link to='/account'>Account</Link>
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className='cursor-pointer text-destructive focus:bg-destructive/10 focus:text-destructive'
-                onSelect={onLogout}
-              >
-                Logout
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
         </div>
       </div>
     </header>

@@ -104,20 +104,21 @@ export function HomeLayout({ children }: HomeLayoutProps) {
         adminHref='/admin'
         isAdminRoute={false}
         navLinks={[{ label: 'Account', to: '/account' }, ...(isAdmin ? [{ label: 'Admin', to: '/admin' }] : [])]}
-      />
-
-      <div className='flex flex-1 min-h-0 w-full flex-col gap-6 overflow-hidden px-3 py-6 md:flex-row md:gap-6 md:p-6 lg:px-8 lg:py-8'>
-        <div className='md:hidden'>
+        historyToggle={
           <button
             type='button'
             onClick={() => setMobileMenuOpen(true)}
             aria-controls='home-mobile-menu'
             aria-expanded={mobileMenuOpen}
-            className='flex items-center gap-2 rounded-lg border border-border/50 bg-card/70 p-3 text-foreground shadow transition hover:bg-card/60'
+            className='flex md:hidden items-center justify-center h-9 w-9 rounded-lg text-primary-foreground transition hover:bg-white/10'
           >
-            <PanelLeftOpen className='h-4 w-4' />
+            <PanelLeftOpen className='h-5 w-5' />
+            <span className='sr-only'>Open navigation</span>
           </button>
-        </div>
+        }
+      />
+
+      <div className='flex flex-1 min-h-0 w-full flex-col gap-6 overflow-hidden px-3 py-6 md:flex-row md:gap-6 md:p-6 lg:px-8 lg:py-8'>
 
         <aside
           className={cn(

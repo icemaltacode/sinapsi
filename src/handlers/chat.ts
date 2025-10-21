@@ -112,12 +112,41 @@ const isRelevantChatModel = (modelId: string): boolean => {
     return false;
   }
 
-  // Include any GPT-N family (gpt-3.5, gpt-4, gpt-5, gpt-100, etc.)
-  // Matches: gpt-4, gpt-4o, gpt-4-turbo, gpt-5, gpt-5-mini, gpt-10-ultra-2025-12-01, etc.
-  const gptPattern = /^gpt-\d+(\.\d+)?(-[a-z0-9]+)*(-\d{4}-\d{2}-\d{2})?$/;
+  // Exclude specialty models
+  if (
+    modelId.includes('search-api') ||
+    modelId.includes('codex') ||
+    modelId.includes('realtime')
+  ) {
+    return false;
+  }
+
+  // Exclude preview/snapshot versions (keep only "latest" or base model names)
+  // Exclude models with dates like gpt-5-2025-08-07 or old snapshot IDs like gpt-4-0613
+  if (
+    /-\d{4}-\d{2}-\d{2}$/.test(modelId) || // Dated versions like gpt-5-2025-08-07
+    /-\d{4}$/.test(modelId) || // Old snapshots like gpt-4-0613
+    modelId.includes('-preview')
+  ) {
+    return false;
+  }
+
+  // Exclude nano variants (too small for general use)
+  if (modelId.includes('-nano')) {
+    return false;
+  }
+
+  // Exclude 16k variants (redundant, base model already supports it)
+  if (modelId.endsWith('-16k')) {
+    return false;
+  }
+
+  // Include any GPT-N family (gpt-3.5, gpt-4, gpt-5, etc.)
+  // Matches: gpt-4, gpt-4o, gpt-4-turbo, gpt-5, gpt-5-mini, gpt-5-pro, etc.
+  const gptPattern = /^gpt-\d+(\.\d+)?(-[a-z]+)?$/;
 
   // Include any o-series models (o1, o2, o3, o100, etc.)
-  // Matches: o1, o1-mini, o1-preview, o3, o3-mini, o100-preview, etc.
+  // Matches: o1, o1-mini, o1-pro, o3, o3-mini, etc.
   const oSeriesPattern = /^o\d+(-[a-z]+)?$/;
 
   return gptPattern.test(modelId) || oSeriesPattern.test(modelId);

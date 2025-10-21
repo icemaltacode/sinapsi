@@ -16,6 +16,9 @@ import {
   Trash2,
   X
 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
 
 import { useAuth } from '../context/auth-context';
 import { cn } from '../lib/utils';
@@ -26,8 +29,7 @@ import {
   fetchProviders,
   getSession,
   listSessions,
-  sendMessage,
-  updateSession
+  sendMessage
 } from '../lib/chat-api';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import type {
@@ -36,7 +38,6 @@ import type {
   ChatSessionSummary
 } from '../types/chat';
 import { Button } from '../components/ui/button';
-import { ScrollArea } from '../components/ui/scroll-area';
 const isFrontendDebugEnabled = (() => {
   const value = import.meta.env.VITE_FRONTEND_DEBUG;
   if (typeof value === 'boolean') {
@@ -44,8 +45,6 @@ const isFrontendDebugEnabled = (() => {
   }
   return String(value ?? '').toLowerCase() === 'true';
 })();
-
-type SocketStatus = 'connecting' | 'open' | 'closed' | 'error';
 
 interface AssistantStreamState {
   sessionId: string;
@@ -83,7 +82,6 @@ export function HomePage() {
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [socketStatus, setSocketStatus] = useState<SocketStatus>('connecting');
   const [connectionId, setConnectionId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyPinned, setHistoryPinned] = useState(false);
@@ -192,7 +190,6 @@ export function HomePage() {
 
   useEffect(() => {
     if (!wsUrl || !idToken) {
-      setSocketStatus('closed');
       return;
     }
 
@@ -204,10 +201,8 @@ export function HomePage() {
 
     const ws = new WebSocket(wsUrl);
     socketRef.current = ws;
-    setSocketStatus('connecting');
 
     ws.addEventListener('open', () => {
-      setSocketStatus('open');
       ws.send(
         JSON.stringify({
           type: 'register',
@@ -321,15 +316,12 @@ export function HomePage() {
     });
 
     const cleanup = () => {
-      setSocketStatus('closed');
       setConnectionId(null);
       socketRef.current = null;
     };
 
     ws.addEventListener('close', cleanup);
-    ws.addEventListener('error', () => {
-      setSocketStatus('error');
-    });
+    ws.addEventListener('error', cleanup);
 
     return () => {
       ws.removeEventListener('close', cleanup);
@@ -468,20 +460,6 @@ export function HomePage() {
     updateSessionState
   ]);
 
-  const handleTogglePin = useCallback(
-    async (session: ChatSessionSummary) => {
-      if (!idToken) return;
-      try {
-        const updated = await updateSession(idToken, session.sessionId, {
-          pinned: !session.pinned
-        });
-        updateSessionState(updated);
-      } catch (error) {
-        console.error('Failed to toggle pin', error);
-      }
-    },
-    [idToken, updateSessionState]
-  );
 
   const handleDeleteSession = useCallback(async () => {
       if (!idToken || !sessionPendingDelete) return;
@@ -522,12 +500,61 @@ export function HomePage() {
         })}
       >
         <div className='flex items-center justify-between gap-3'>
-          <div className='flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground/80'>
+          <div className={cn(
+            'flex items-center gap-2 text-xs uppercase tracking-wide',
+            isUser ? 'text-white/70' : 'text-muted-foreground/80'
+          )}>
             {isUser ? 'You' : isAssistant ? 'Assistant' : 'System'}
           </div>
-          <span className='text-[0.65rem] text-muted-foreground'>{formatTimestamp(message.createdAt)}</span>
+          <span className={cn(
+            'text-[0.65rem]',
+            isUser ? 'text-white/60' : 'text-muted-foreground'
+          )}>
+            {formatTimestamp(message.createdAt)}
+          </span>
         </div>
-        <p className='whitespace-pre-wrap text-sm leading-relaxed'>{message.content}</p>
+        <div className={cn(
+          'prose prose-sm max-w-none text-sm leading-relaxed',
+          'prose-headings:mt-3 prose-headings:mb-2',
+          'prose-p:my-2 prose-pre:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0',
+          isAssistant && 'prose-invert dark:prose-invert'
+        )}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeHighlight]}
+            components={{
+              pre: ({ children }) => (
+                <pre className='overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-100 dark:bg-slate-950 dark:text-slate-200'>
+                  {children}
+                </pre>
+              ),
+              code: ({ className, children, ...props }) => {
+                const isInline = !className;
+                return isInline ? (
+                  <code className='rounded bg-slate-200 px-1.5 py-0.5 text-xs font-mono text-slate-900 dark:bg-slate-700 dark:text-slate-100' {...props}>
+                    {children}
+                  </code>
+                ) : (
+                  <code className={className} {...props}>
+                    {children}
+                  </code>
+                );
+              },
+              a: ({ children, ...props }) => (
+                <a className='text-primary hover:underline' {...props}>
+                  {children}
+                </a>
+              ),
+              blockquote: ({ children }) => (
+                <blockquote className='border-l-4 border-primary/50 pl-4 italic text-muted-foreground'>
+                  {children}
+                </blockquote>
+              )
+            }}
+          >
+            {message.content}
+          </ReactMarkdown>
+        </div>
       </div>
     );
   };
@@ -612,7 +639,7 @@ export function HomePage() {
 
       <section
         id='chat-workspace'
-        className='relative flex w-full flex-1 min-h-0 flex-col gap-6 overflow-hidden rounded-2xl border border-border/40 bg-card/70 p-6 shadow-xl backdrop-blur'
+        className='relative flex w-full flex-1 min-h-0 flex-col gap-6 overflow-hidden rounded-2xl border border-border/40 bg-card/70 p-3 md:p-6 shadow-xl backdrop-blur'
       >
         {historyOverlay ? (
           <div
@@ -658,21 +685,9 @@ export function HomePage() {
           id='chat-toolbar'
           className='relative flex flex-shrink-0 flex-col gap-4 md:flex-row md:items-center md:justify-between'
         >
-          {/* History toggle button - floating at top left (hide when pinned) */}
-          {!historyPinned && (
-            <button
-              type='button'
-              className='absolute -left-3 -top-3 z-40 flex h-10 w-10 items-center justify-center rounded-full border border-border/40 bg-background/90 text-muted-foreground shadow-lg transition hover:bg-background hover:text-foreground'
-              onClick={() => setHistoryOpen((value) => !value)}
-              aria-label='Toggle conversation history'
-            >
-              <History className='h-5 w-5' />
-            </button>
-          )}
-
-          <div className='pl-8'>
+          <div className='pl-0 md:pl-8'>
             <h2 className='flex items-center gap-2 text-2xl font-semibold tracking-tight text-white'>
-              <MessageCircleMore className='h-5 w-5 text-primary/80' /> Chat workspace 1
+              <MessageCircleMore className='h-5 w-5 text-primary/80' /> Chat workspace
             </h2>
             <p className='text-sm text-muted-foreground'>
               Welcome back, {greeting}. Start a new conversation or pick up where you left off.
@@ -680,18 +695,6 @@ export function HomePage() {
           </div>
 
           <div className='flex flex-shrink-0 flex-wrap items-center gap-3'>
-            <div className='flex items-center gap-2 rounded-lg border border-border/40 bg-background/70 px-3 py-2 text-sm text-muted-foreground'>
-              <span className='font-medium text-foreground/80'>Connection</span>
-              <span
-                className={cn('inline-flex h-2.5 w-2.5 rounded-full', {
-                  'bg-emerald-400': socketStatus === 'open' && connectionId,
-                  'bg-yellow-400': socketStatus === 'connecting' || !connectionId,
-                  'bg-rose-500': socketStatus === 'error'
-                })}
-              />
-              <span className='text-xs uppercase tracking-wide'>{socketStatus}</span>
-            </div>
-
             <Button
               type='button'
               className='min-w-[8rem] bg-[#EC5763] text-white shadow-md transition hover:bg-[#f47180]'
@@ -872,7 +875,7 @@ export function HomePage() {
               {/* Composer - fixed at bottom */}
               <div
                 id='chat-composer'
-                className='flex flex-shrink-0 flex-col gap-2 border-t border-border/30 bg-background/70 p-4'
+                className='flex flex-shrink-0 items-end gap-2 border-t border-border/30 bg-background/70 p-4'
               >
                 <textarea
                   rows={2}
@@ -889,28 +892,19 @@ export function HomePage() {
                       ? 'Type your message… (Enter to send, Shift+Enter for new line)'
                       : 'Start a new chat or select a conversation to begin messaging.'
                   }
-                  className='w-full resize-none rounded-lg border border-border/30 bg-background/60 px-3 py-2 text-sm text-foreground shadow-inner focus-visible:outline-none focus-visible:ring focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50'
+                  className='flex-1 resize-none rounded-lg border border-border/30 bg-background/60 px-3 py-2 text-sm text-foreground shadow-inner focus-visible:outline-none focus-visible:ring focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50'
                   disabled={!activeSession || sending}
                 />
-                <div className='flex items-center justify-between gap-3'>
-                  <span className='text-xs text-muted-foreground'>
-                    {!activeSession
-                      ? 'No active conversation'
-                      : connectionId
-                        ? 'Connected • Ready to stream'
-                        : 'Connecting to workspace…'}
-                  </span>
-                  <Button
-                    type='button'
-                    size='sm'
-                    className='min-w-[7rem] bg-[#EC5763] text-white shadow-md transition hover:bg-[#f47180]'
-                    onClick={handleSendMessage}
-                    disabled={!activeSession || sending || !composerValue.trim() || !connectionId}
-                  >
-                    {sending ? <Loader2 className='mr-2 h-4 w-4 animate-spin' /> : <Send className='mr-2 h-4 w-4' />}
-                    Send
-                  </Button>
-                </div>
+                <Button
+                  type='button'
+                  size='icon'
+                  className='h-9 w-9 flex-shrink-0 bg-[#EC5763] text-white shadow-md transition hover:bg-[#f47180]'
+                  onClick={handleSendMessage}
+                  disabled={!activeSession || sending || !composerValue.trim() || !connectionId}
+                  aria-label='Send message'
+                >
+                  {sending ? <Loader2 className='h-4 w-4 animate-spin' /> : <Send className='h-4 w-4' />}
+                </Button>
               </div>
             </div>
           </div>
