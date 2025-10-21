@@ -95,7 +95,7 @@ export function HomeLayout({ children }: HomeLayoutProps) {
   );
 
   return (
-    <div className='min-h-screen bg-[radial-gradient(circle_at_top_left,_#232E60,_#0b1120_55%,_#06070d)] text-foreground'>
+    <div className='flex h-[100svh] flex-col bg-[radial-gradient(circle_at_top_left,_#232E60,_#0b1120_55%,_#06070d)] text-foreground'>
       <AppHeader
         userName={user?.displayName ?? user?.email ?? 'Sinapsi User'}
         avatarUrl={user?.avatarUrl}
@@ -106,7 +106,7 @@ export function HomeLayout({ children }: HomeLayoutProps) {
         navLinks={[{ label: 'Account', to: '/account' }, ...(isAdmin ? [{ label: 'Admin', to: '/admin' }] : [])]}
       />
 
-      <div className='flex w-full flex-col gap-4 px-2 py-8 md:flex-row md:gap-6 md:px-6 lg:px-8'>
+      <div className='flex flex-1 min-h-0 w-full flex-col gap-6 overflow-hidden px-3 py-6 md:flex-row md:gap-6 md:p-6 lg:px-8 lg:py-8'>
         <div className='md:hidden'>
           <button
             type='button'
@@ -121,14 +121,14 @@ export function HomeLayout({ children }: HomeLayoutProps) {
 
         <aside
           className={cn(
-            'group/sidebar hidden rounded-2xl border border-border/40 bg-card/70 text-sm text-muted-foreground shadow-xl backdrop-blur md:flex md:flex-col',
+            'group/sidebar hidden rounded-2xl border border-border/40 bg-card/70 text-sm text-muted-foreground shadow-xl backdrop-blur md:flex md:flex-col md:self-start',
             iconRail ? 'md:w-16 md:p-3 md:hover:w-56 md:hover:p-4 md:transition-all md:duration-200' : 'md:w-56 md:p-4'
           )}
         >
           {iconRail ? renderNavLinks({ pointerHover: true }) : renderNavLinks({ showLabels: true })}
         </aside>
 
-        <main className='flex-1 space-y-6 rounded-2xl border border-border/40 bg-card/70 px-4 py-6 shadow-xl backdrop-blur md:px-6'>
+        <main className='flex min-h-0 flex-1 flex-col gap-6'>
           {content}
         </main>
       </div>

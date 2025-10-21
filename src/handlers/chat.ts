@@ -81,17 +81,63 @@ const formatModelLabel = (modelId: string) =>
     .replace(/\b([a-z])/g, (match) => match.toUpperCase())
     .replace(/\bgpt\b/i, 'GPT');
 
+const isRelevantChatModel = (modelId: string): boolean => {
+  // Exclude fine-tuned models (contain ':')
+  if (modelId.includes(':')) {
+    return false;
+  }
+
+  // Exclude non-chat models
+  if (
+    modelId.includes('whisper') ||
+    modelId.includes('tts') ||
+    modelId.includes('dall-e') ||
+    modelId.includes('embedding') ||
+    modelId.includes('babbage') ||
+    modelId.includes('davinci') ||
+    modelId.includes('curie') ||
+    modelId.includes('ada') ||
+    modelId.includes('text-moderation')
+  ) {
+    return false;
+  }
+
+  // Exclude instruct variants
+  if (modelId.includes('instruct')) {
+    return false;
+  }
+
+  // Exclude vision-only models (but allow vision-capable chat models)
+  if (modelId.endsWith('-vision') || modelId.includes('vision-preview')) {
+    return false;
+  }
+
+  // Include any GPT-N family (gpt-3.5, gpt-4, gpt-5, gpt-100, etc.)
+  // Matches: gpt-4, gpt-4o, gpt-4-turbo, gpt-5, gpt-5-mini, gpt-10-ultra-2025-12-01, etc.
+  const gptPattern = /^gpt-\d+(\.\d+)?(-[a-z0-9]+)*(-\d{4}-\d{2}-\d{2})?$/;
+
+  // Include any o-series models (o1, o2, o3, o100, etc.)
+  // Matches: o1, o1-mini, o1-preview, o3, o3-mini, o100-preview, etc.
+  const oSeriesPattern = /^o\d+(-[a-z]+)?$/;
+
+  return gptPattern.test(modelId) || oSeriesPattern.test(modelId);
+};
+
 const fetchOpenAIModels = async (apiKey: string): Promise<ProviderModel[]> => {
   try {
     const client = new OpenAI({ apiKey });
     const models = await client.models.list();
     const filtered = models.data
       .map((model) => model.id)
-      .filter((id) => id.startsWith('gpt-'))
-      .filter((id) => !id.includes('instruct') && !id.includes('bak'));
+      .filter(isRelevantChatModel);
 
     const unique = Array.from(new Set(filtered));
-    unique.sort((a, b) => a.localeCompare(b));
+    unique.sort((a, b) => {
+      // Sort with newer models first, o-series at top
+      if (a.startsWith('o') && !b.startsWith('o')) return -1;
+      if (!a.startsWith('o') && b.startsWith('o')) return 1;
+      return b.localeCompare(a); // Reverse alphabetical for GPT models (4o before 4)
+    });
 
     return unique.map((id) => ({
       id,
@@ -567,6 +613,7 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
       content: assistantContent
     });
 
+    // Update session with new timestamp (captures new version)
     session = await updateSessionMetadata(session, {
       lastInteractionAt: assistantTimestamp
     });
@@ -580,6 +627,7 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
         }
       ]);
       if (title) {
+        // Use updated session from previous update to avoid version conflict
         session = await updateSessionMetadata(session, { title });
         await sendToConnection(connectionId, {
           type: 'session.title',

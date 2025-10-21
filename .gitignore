@@ -15,3 +15,4 @@ frontend/.env.local
 .esbuild
 .DS_Store
 docs
+CLAUDE.md

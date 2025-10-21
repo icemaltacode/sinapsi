@@ -186,6 +186,7 @@ functions:
 
   chatSessionMessages:
     handler: src/handlers/chat.sessionsMessages
+    timeout: 900  # 15 minutes for streaming LLM responses (max Lambda timeout)
     events:
       - httpApi:
           method: POST

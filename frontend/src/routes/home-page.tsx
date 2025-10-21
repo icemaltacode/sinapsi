@@ -29,20 +29,14 @@ import {
   sendMessage,
   updateSession
 } from '../lib/chat-api';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '../components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import type {
   ChatMessage,
   ChatProviderOption,
   ChatSessionSummary
 } from '../types/chat';
 import { Button } from '../components/ui/button';
+import { ScrollArea } from '../components/ui/scroll-area';
 const isFrontendDebugEnabled = (() => {
   const value = import.meta.env.VITE_FRONTEND_DEBUG;
   if (typeof value === 'boolean') {
@@ -102,7 +96,9 @@ export function HomePage() {
   const [sessionsLoading, setSessionsLoading] = useState(false);
 
   const socketRef = useRef<WebSocket | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messagesViewportRef = useRef<HTMLDivElement | null>(null);
+  const prevSessionIdRef = useRef<string | null>(null);
+  const [autoScroll, setAutoScroll] = useState(true);
   const loadedSessionsRef = useRef(new Set<string>());
 
   const sortedSessions = useMemo(() => sortSessions(sessions), [sessions]);
@@ -197,6 +193,12 @@ export function HomePage() {
   useEffect(() => {
     if (!wsUrl || !idToken) {
       setSocketStatus('closed');
+      return;
+    }
+
+    // Prevent double initialization - check if WebSocket already exists and is active
+    const existingSocket = socketRef.current;
+    if (existingSocket && (existingSocket.readyState === WebSocket.CONNECTING || existingSocket.readyState === WebSocket.OPEN)) {
       return;
     }
 
@@ -331,16 +333,37 @@ export function HomePage() {
 
     return () => {
       ws.removeEventListener('close', cleanup);
-      ws.close();
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close();
+      }
     };
-  }, [idToken, refreshSessions, updateMessages]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idToken]);
 
+  // Track whether user is near the bottom; only autoscroll when true
   useEffect(() => {
-    const container = messagesEndRef.current;
-    if (container) {
-      container.scrollIntoView({ behavior: 'smooth' });
+    const viewport = messagesViewportRef.current;
+    if (!viewport) return;
+    const onScroll = () => {
+      const nearBottom =
+        viewport.scrollTop >= viewport.scrollHeight - viewport.clientHeight - 40;
+      setAutoScroll(nearBottom);
+    };
+    viewport.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+    return () => viewport.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // On new messages or session change, scroll if user is at bottom or session switched
+  useEffect(() => {
+    const viewport = messagesViewportRef.current;
+    if (!viewport) return;
+    const sessionChanged = prevSessionIdRef.current !== activeSessionId;
+    if (autoScroll || sessionChanged) {
+      viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'auto' });
     }
-  }, [activeSessionId, messagesBySession]);
+    prevSessionIdRef.current = activeSessionId;
+  }, [activeSessionId, messagesBySession, autoScroll]);
 
   const currentProvider = useMemo(
     () => providers.find((provider) => provider.providerId === selectedProviderId) ?? null,
@@ -573,7 +596,7 @@ export function HomePage() {
   };
 
   return (
-    <div className='space-y-6'>
+    <>
       {message ? (
         <div
           className={cn(
@@ -587,10 +610,16 @@ export function HomePage() {
         </div>
       ) : null}
 
-      <section className='relative overflow-hidden rounded-2xl border border-border/40 bg-card/70 p-6 shadow-xl backdrop-blur'>
+      <section
+        id='chat-workspace'
+        className='relative flex w-full flex-1 min-h-0 flex-col gap-6 overflow-hidden rounded-2xl border border-border/40 bg-card/70 p-6 shadow-xl backdrop-blur'
+      >
         {historyOverlay ? (
-          <div className='absolute inset-y-6 left-6 z-30 w-72 rounded-2xl border border-border/30 bg-background/95 p-4 shadow-xl'>
-            <div className='mb-4 flex items-center justify-between'>
+          <div
+            id='history-overlay-panel'
+            className='absolute inset-y-6 left-6 z-30 flex w-72 flex-col rounded-2xl border border-border/30 bg-background/95 p-4 shadow-xl'
+          >
+            <div className='mb-4 flex flex-shrink-0 items-center justify-between'>
               <h3 className='text-sm font-semibold text-foreground'>Conversation history</h3>
               <div className='flex items-center gap-1'>
                 <Button
@@ -618,24 +647,39 @@ export function HomePage() {
                 </Button>
               </div>
             </div>
-            <div className='space-y-3 overflow-y-auto pr-1'>{renderHistoryList(() => setHistoryOpen(false))}</div>
-            <p className='mt-4 text-[0.7rem] text-muted-foreground/80'>
+            <div className='flex-1 space-y-3 overflow-y-auto pr-1'>{renderHistoryList(() => setHistoryOpen(false))}</div>
+            <p className='mt-4 flex-shrink-0 text-[0.7rem] text-muted-foreground/80'>
               Conversations auto-save once you send the first message. Pin important threads to keep them handy.
             </p>
           </div>
         ) : null}
 
-        <div className='flex flex-col gap-4 md:flex-row md:items-center md:justify-between'>
-          <div>
+        <div
+          id='chat-toolbar'
+          className='relative flex flex-shrink-0 flex-col gap-4 md:flex-row md:items-center md:justify-between'
+        >
+          {/* History toggle button - floating at top left (hide when pinned) */}
+          {!historyPinned && (
+            <button
+              type='button'
+              className='absolute -left-3 -top-3 z-40 flex h-10 w-10 items-center justify-center rounded-full border border-border/40 bg-background/90 text-muted-foreground shadow-lg transition hover:bg-background hover:text-foreground'
+              onClick={() => setHistoryOpen((value) => !value)}
+              aria-label='Toggle conversation history'
+            >
+              <History className='h-5 w-5' />
+            </button>
+          )}
+
+          <div className='pl-8'>
             <h2 className='flex items-center gap-2 text-2xl font-semibold tracking-tight text-white'>
-              <MessageCircleMore className='h-5 w-5 text-primary/80' /> Chat workspace
+              <MessageCircleMore className='h-5 w-5 text-primary/80' /> Chat workspace 1
             </h2>
             <p className='text-sm text-muted-foreground'>
               Welcome back, {greeting}. Start a new conversation or pick up where you left off.
             </p>
           </div>
 
-          <div className='flex flex-wrap items-center gap-3'>
+          <div className='flex flex-shrink-0 flex-wrap items-center gap-3'>
             <div className='flex items-center gap-2 rounded-lg border border-border/40 bg-background/70 px-3 py-2 text-sm text-muted-foreground'>
               <span className='font-medium text-foreground/80'>Connection</span>
               <span
@@ -663,21 +707,11 @@ export function HomePage() {
               <Sparkles className='mr-2 h-4 w-4' />
               {showNewChatForm ? 'Close' : 'New chat'}
             </Button>
-            <Button
-              type='button'
-              variant='ghost'
-              size='icon'
-              className='md:hidden'
-              onClick={() => setHistoryOpen(true)}
-              aria-label='Open history'
-            >
-              <History className='h-4 w-4' />
-            </Button>
           </div>
         </div>
 
         {showNewChatForm ? (
-          <div className='mt-6 grid gap-4 md:grid-cols-2'>
+          <div id='new-chat-form' className='grid flex-shrink-0 gap-4 md:grid-cols-2'>
             <div className='flex flex-col gap-2'>
               <label htmlFor='provider' className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>
                 Provider instance
@@ -739,9 +773,15 @@ export function HomePage() {
           </div>
         ) : null}
 
-        <div className={cn('mt-6 flex flex-col gap-4 md:flex-row', historyPinned ? 'md:items-start md:gap-6' : 'md:items-start')}>
+        <div
+          id='chat-layout'
+          className='flex w-full flex-1 min-h-0 flex-col gap-4 overflow-hidden md:flex-row'
+        >
           {historyPinned ? (
-            <div className='hidden w-full max-w-[18rem] flex-col rounded-2xl border border-border/30 bg-background/40 p-4 md:flex'>
+            <div
+              id='history-sidebar'
+              className='hidden min-h-0 w-full max-w-[18rem] flex-shrink-0 flex-col rounded-2xl border border-border/30 bg-background/40 p-4 md:flex'
+            >
               <div className='mb-4 flex items-center justify-between'>
                 <h3 className='text-sm font-semibold text-foreground'>Conversation history</h3>
                 <Button
@@ -755,27 +795,27 @@ export function HomePage() {
                   <PinOff className='h-4 w-4' />
                 </Button>
               </div>
-              <div className='space-y-3 overflow-y-auto pr-1'>{renderHistoryList(() => setHistoryOpen(false))}</div>
+              <div className='flex-1 space-y-3 overflow-y-auto pr-1'>{renderHistoryList(() => setHistoryOpen(false))}</div>
               <p className='mt-4 text-[0.7rem] text-muted-foreground/80'>
                 Conversations auto-save once you send the first message. Pin important threads to keep them handy.
               </p>
             </div>
           ) : null}
 
-          <div className='relative flex-1'>
-            <button
-              type='button'
-              className='absolute left-0 top-1/2 z-20 hidden -translate-x-1/2 -translate-y-1/2 rounded-full border border-border/40 bg-background/70 p-2 text-muted-foreground shadow-sm transition hover:text-foreground md:inline-flex'
-              onClick={() => setHistoryOpen((value) => !value)}
-              aria-label='Toggle history'
+          <div
+            id='chat-panel-container'
+            className='relative flex min-h-0 w-full flex-1 overflow-hidden'
+          >
+            <div
+              id='chat-panel'
+              className='flex h-full w-full flex-col rounded-2xl border border-border/40 bg-background/40'
             >
-              <History className='h-4 w-4' />
-            </button>
-
-            <div className='flex flex-col gap-3 rounded-2xl border border-border/40 bg-background/40 p-4'>
-            <div className='flex items-center justify-between gap-3 text-sm text-muted-foreground'>
-              {activeSession ? (
-                <div className='flex items-center gap-2'>
+              {/* Header - fixed at top */}
+              <div
+                id='chat-panel-header'
+                className='flex flex-shrink-0 items-center justify-between gap-3 border-b border-border/30 p-4 text-sm text-muted-foreground'
+              >
+                {activeSession ? (
                   <div>
                     <p className='font-medium text-foreground'>
                       {activeSession.title || 'Untitled conversation'}
@@ -784,35 +824,39 @@ export function HomePage() {
                       {activeSession.providerInstanceName} • {activeSession.model}
                     </p>
                   </div>
-                  <Button
-                    type='button'
-                    size='icon'
-                    variant='ghost'
-                    className='h-7 w-7 rounded-full border border-border/40'
-                    onClick={() => void handleTogglePin(activeSession)}
-                    aria-label={activeSession.pinned ? 'Unpin conversation' : 'Pin conversation'}
-                  >
-                    {activeSession.pinned ? <PinOff className='h-4 w-4' /> : <Pin className='h-4 w-4' />}
-                  </Button>
+                ) : (
+                  <p>Select a conversation or start a new chat.</p>
+                )}
+                <div className='text-xs uppercase tracking-wide text-muted-foreground/80'>
+                  {currentMessages.length} messages
                 </div>
-              ) : (
-                <p>Select a conversation or start a new chat.</p>
-              )}
-              <div className='text-xs uppercase tracking-wide text-muted-foreground/80'>
-                {currentMessages.length} messages
               </div>
-            </div>
 
-              <div className='relative flex min-h-[320px] max-h-[calc(100svh-240px)] flex-col gap-3 overflow-hidden rounded-xl border border-border/30 bg-background/60 p-4'>
-                <div className='flex-1 space-y-3 overflow-y-auto pr-1'>
+              {/* Messages - scrollable middle section */}
+              <div
+                id='chat-messages'
+                ref={messagesViewportRef}
+                className='flex-1 overflow-y-auto overflow-x-hidden p-4'
+              >
+                <div className='flex flex-col gap-3'>
                   {activeSession ? (
-                    currentMessages.map(renderMessage)
+                    currentMessages.length > 0 ? (
+                      currentMessages.map(renderMessage)
+                    ) : (
+                      <div className='flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground'>
+                        <Sparkles className='h-5 w-5 text-[#EC5763]' />
+                        <p>Ready to chat!</p>
+                        <p className='text-xs text-muted-foreground/80'>
+                          Type your message below to begin the conversation.
+                        </p>
+                      </div>
+                    )
                   ) : (
                     <div className='flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground'>
-                      <Sparkles className='h-5 w-5 text-[#EC5763]' />
+                      <MessageCircleMore className='h-8 w-8 text-muted-foreground/50' />
                       <p>No conversation selected.</p>
                       <p className='text-xs text-muted-foreground/80'>
-                        Choose a previous chat or click “New chat” to begin.
+                        Choose a previous chat or click "New chat" to begin.
                       </p>
                     </div>
                   )}
@@ -822,41 +866,50 @@ export function HomePage() {
                       <span>Assistant is thinking…</span>
                     </div>
                   ) : null}
-                  <div ref={messagesEndRef} />
                 </div>
+              </div>
 
-                <div className='flex flex-col gap-2 rounded-xl border border-border/20 bg-background/70 p-3 shadow-sm backdrop-blur'>
-                  <textarea
-                    rows={2}
-                    value={composerValue}
-                    onChange={(event) => setComposerValue(event.target.value)}
-                    placeholder={
-                      activeSession
-                        ? 'Ask a question or describe a task…'
-                        : 'Select a conversation or start a new chat to begin.'
+              {/* Composer - fixed at bottom */}
+              <div
+                id='chat-composer'
+                className='flex flex-shrink-0 flex-col gap-2 border-t border-border/30 bg-background/70 p-4'
+              >
+                <textarea
+                  rows={2}
+                  value={composerValue}
+                  onChange={(event) => setComposerValue(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                      event.preventDefault();
+                      void handleSendMessage();
                     }
-                    className='w-full resize-none rounded-lg border border-border/30 bg-background/60 px-3 py-2 text-sm text-foreground shadow-inner focus-visible:outline-none focus-visible:ring focus-visible:ring-ring'
-                    disabled={sending || !activeSession}
-                  />
-                  <div className='flex items-center justify-between gap-3'>
-                    <span className='text-xs text-muted-foreground'>
-                      {activeSession
-                        ? connectionId
-                          ? 'Ready to stream responses.'
-                          : 'Connecting to workspace…'
-                        : 'Choose a conversation or start a new chat.'}
-                    </span>
-                    <Button
-                      type='button'
-                      size='sm'
-                      className='min-w-[7rem]'
-                      onClick={handleSendMessage}
-                      disabled={sending || !composerValue.trim() || !connectionId || !activeSession}
-                    >
-                      {sending ? <Loader2 className='mr-2 h-4 w-4 animate-spin' /> : <Send className='mr-2 h-4 w-4' />}
-                      Send
-                    </Button>
-                  </div>
+                  }}
+                  placeholder={
+                    activeSession
+                      ? 'Type your message… (Enter to send, Shift+Enter for new line)'
+                      : 'Start a new chat or select a conversation to begin messaging.'
+                  }
+                  className='w-full resize-none rounded-lg border border-border/30 bg-background/60 px-3 py-2 text-sm text-foreground shadow-inner focus-visible:outline-none focus-visible:ring focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50'
+                  disabled={!activeSession || sending}
+                />
+                <div className='flex items-center justify-between gap-3'>
+                  <span className='text-xs text-muted-foreground'>
+                    {!activeSession
+                      ? 'No active conversation'
+                      : connectionId
+                        ? 'Connected • Ready to stream'
+                        : 'Connecting to workspace…'}
+                  </span>
+                  <Button
+                    type='button'
+                    size='sm'
+                    className='min-w-[7rem] bg-[#EC5763] text-white shadow-md transition hover:bg-[#f47180]'
+                    onClick={handleSendMessage}
+                    disabled={!activeSession || sending || !composerValue.trim() || !connectionId}
+                  >
+                    {sending ? <Loader2 className='mr-2 h-4 w-4 animate-spin' /> : <Send className='mr-2 h-4 w-4' />}
+                    Send
+                  </Button>
                 </div>
               </div>
             </div>
@@ -900,7 +953,6 @@ export function HomePage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   );
-
 }
