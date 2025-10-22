@@ -171,6 +171,8 @@ export interface SessionEventItem extends BaseItem {
   messageId: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  imageUrl?: string;
+  imagePrompt?: string;
   provider?: string;
   tokensIn?: number;
   tokensOut?: number;

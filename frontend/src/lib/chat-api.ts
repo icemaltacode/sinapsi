@@ -63,9 +63,9 @@ export const updateSession = async (
 export const sendMessage = async (
   token: string,
   sessionId: string,
-  payload: { message: string; connectionId?: string }
-): Promise<{ sessionId: string; userMessageId: string; assistantMessageId: string }> => {
-  return apiRequest<{ sessionId: string; userMessageId: string; assistantMessageId: string }>(
+  payload: { message: string; connectionId?: string; role?: 'user' | 'system' }
+): Promise<{ sessionId: string; userMessageId: string; assistantMessageId?: string }> => {
+  return apiRequest<{ sessionId: string; userMessageId: string; assistantMessageId?: string }>(
     `/chat/sessions/${sessionId}/messages`,
     {
       method: 'POST',

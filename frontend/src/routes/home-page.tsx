@@ -6,12 +6,15 @@ import {
   useState
 } from 'react';
 import {
+  ArrowDown,
+  ArrowUp,
   History,
   Loader2,
   MessageCircleMore,
   Pin,
   PinOff,
   Send,
+  Settings,
   Sparkles,
   Trash2,
   X
@@ -38,6 +41,7 @@ import type {
   ChatSessionSummary
 } from '../types/chat';
 import { Button } from '../components/ui/button';
+import { AnimatedImagePlaceholder } from '../components/AnimatedImagePlaceholder';
 const isFrontendDebugEnabled = (() => {
   const value = import.meta.env.VITE_FRONTEND_DEBUG;
   if (typeof value === 'boolean') {
@@ -92,12 +96,15 @@ export function HomePage() {
   const [assistantStream, setAssistantStream] = useState<AssistantStreamState | null>(null);
   const [providersLoading, setProvidersLoading] = useState(false);
   const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [systemPromptOpen, setSystemPromptOpen] = useState(false);
+  const [systemPromptValue, setSystemPromptValue] = useState('');
 
   const socketRef = useRef<WebSocket | null>(null);
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
   const prevSessionIdRef = useRef<string | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const loadedSessionsRef = useRef(new Set<string>());
+  const activePollingIntervalsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
 
   const sortedSessions = useMemo(() => sortSessions(sessions), [sessions]);
   const historyVisible = historyPinned || historyOpen;
@@ -310,6 +317,182 @@ export function HomePage() {
           }
           return;
         }
+
+        if (type === 'assistant.image.started') {
+          const sessionId = payload.sessionId as string;
+          const messageId = payload.messageId as string;
+          if (!sessionId || !messageId) return;
+          console.log('🎨 Image generation started');
+          setAssistantStream({ sessionId, messageId });
+          updateMessages(sessionId, (messages) => [
+            ...messages,
+            {
+              messageId,
+              role: 'assistant',
+              content: 'Generating image...',
+              createdAt: new Date().toISOString(),
+              createdBy: 'assistant'
+            }
+          ]);
+          return;
+        }
+
+        if (type === 'assistant.image.aspect_detected') {
+          const sessionId = payload.sessionId as string;
+          const messageId = payload.messageId as string;
+          const aspectRatio = payload.aspectRatio as 'portrait' | 'landscape' | 'square';
+          if (!sessionId || !messageId || !aspectRatio) return;
+          console.log(`🎨 Aspect ratio detected: ${aspectRatio}`);
+
+          // Update existing message if it exists, otherwise create it
+          updateMessages(sessionId, (messages) => {
+            const existingMessage = messages.find(m => m.messageId === messageId);
+
+            if (existingMessage) {
+              // Update existing message
+              return messages.map((message) =>
+                message.messageId === messageId
+                  ? {
+                      ...message,
+                      imageAspectRatio: aspectRatio,
+                      imageGenerating: true
+                    }
+                  : message
+              );
+            } else {
+              // Create new message with aspect ratio
+              return [
+                ...messages,
+                {
+                  messageId,
+                  role: 'assistant' as const,
+                  content: 'Generating image...',
+                  imageAspectRatio: aspectRatio,
+                  imageGenerating: true,
+                  createdAt: new Date().toISOString(),
+                  createdBy: 'assistant'
+                }
+              ];
+            }
+          });
+          return;
+        }
+
+        if (type === 'assistant.image.progress') {
+          const sessionId = payload.sessionId as string;
+          const messageId = payload.messageId as string;
+          const progressMessage = payload.message as string;
+          if (!sessionId || !messageId) return;
+          updateMessages(sessionId, (messages) =>
+            messages.map((message) =>
+              message.messageId === messageId
+                ? {
+                    ...message,
+                    content: progressMessage || 'Generating image...'
+                  }
+                : message
+            )
+          );
+          return;
+        }
+
+        if (type === 'assistant.image.partial') {
+          const sessionId = payload.sessionId as string;
+          const messageId = payload.messageId as string;
+          const imageUrl = payload.imageUrl as string;
+          const partialCount = payload.partialCount as number | undefined;
+          if (!sessionId || !messageId || !imageUrl) return;
+
+          console.log(`🎨 Partial ${partialCount}/3 received`);
+
+          // Update message with partial image URL, create if doesn't exist
+          updateMessages(sessionId, (messages) => {
+            const existingMessage = messages.find(m => m.messageId === messageId);
+
+            if (existingMessage) {
+              return messages.map((message) =>
+                message.messageId === messageId
+                  ? {
+                      ...message,
+                      content: 'Generating image...',
+                      imageUrl,
+                      imageGenerating: true,
+                      partialCount
+                    }
+                  : message
+              );
+            } else {
+              return [
+                ...messages,
+                {
+                  messageId,
+                  role: 'assistant' as const,
+                  content: 'Generating image...',
+                  imageUrl,
+                  imageGenerating: true,
+                  partialCount,
+                  createdAt: new Date().toISOString(),
+                  createdBy: 'assistant'
+                }
+              ];
+            }
+          });
+          return;
+        }
+
+        if (type === 'assistant.image.completed') {
+          const sessionId = payload.sessionId as string;
+          const messageId = payload.messageId as string;
+          const imageUrl = payload.imageUrl as string;
+          const prompt = payload.prompt as string;
+          if (!sessionId || !messageId || !imageUrl) return;
+
+          console.log('🎨 Final image received');
+
+          updateMessages(sessionId, (messages) => {
+            const existingMessage = messages.find(m => m.messageId === messageId);
+
+            if (existingMessage) {
+              return messages.map((message) =>
+                message.messageId === messageId
+                  ? {
+                      ...message,
+                      content: `Generated image: ${prompt}`,
+                      imageUrl,
+                      imagePrompt: prompt,
+                      imageGenerating: false
+                    }
+                  : message
+              );
+            } else {
+              return [
+                ...messages,
+                {
+                  messageId,
+                  role: 'assistant' as const,
+                  content: `Generated image: ${prompt}`,
+                  imageUrl,
+                  imagePrompt: prompt,
+                  imageGenerating: false,
+                  createdAt: new Date().toISOString(),
+                  createdBy: 'assistant'
+                }
+              ];
+            }
+          });
+          setAssistantStream(null);
+          void refreshSessions();
+
+          // Stop polling since we got the image via WebSocket
+          const existingInterval = activePollingIntervalsRef.current.get(sessionId);
+          if (existingInterval) {
+            clearInterval(existingInterval);
+            activePollingIntervalsRef.current.delete(sessionId);
+            console.log('Stopped polling - image received via WebSocket');
+          }
+
+          return;
+        }
       } catch (error) {
         console.error('Failed to parse websocket message', error);
       }
@@ -372,6 +555,30 @@ export function HomePage() {
     [activeSessionId, messagesBySession]
   );
 
+  const tokenStats = useMemo(() => {
+    const stats = { sent: 0, received: 0, total: 0 };
+    currentMessages.forEach((msg) => {
+      if (msg.tokensIn) stats.sent += msg.tokensIn;
+      if (msg.tokensOut) stats.received += msg.tokensOut;
+    });
+    stats.total = stats.sent + stats.received;
+    return stats;
+  }, [currentMessages]);
+
+  // Load existing system message when opening the panel
+  useEffect(() => {
+    if (systemPromptOpen && activeSessionId) {
+      const systemMessages = currentMessages.filter((msg) => msg.role === 'system');
+      if (systemMessages.length > 0) {
+        // Use the most recent system message
+        const latestSystemMessage = systemMessages[systemMessages.length - 1];
+        setSystemPromptValue(latestSystemMessage.content);
+      } else {
+        setSystemPromptValue('');
+      }
+    }
+  }, [systemPromptOpen, activeSessionId, currentMessages]);
+
   const handleSelectSession = useCallback(
     async (sessionId: string) => {
       setActiveSessionId(sessionId);
@@ -402,6 +609,80 @@ export function HomePage() {
       setSending(false);
     }
   }, [connectionId, idToken, selectedModelId, selectedProviderId, updateSessionState]);
+
+  // Detect if a message is an image generation request
+  const detectImageGenerationIntent = useCallback((message: string): boolean => {
+    const lowerMessage = message.toLowerCase();
+    const imageTerms = ['image', 'picture', 'photo', 'illustration', 'drawing', 'artwork', 'graphic'];
+    const actionTerms = ['generate', 'create', 'make', 'draw', 'produce', 'design', 'show me'];
+
+    const hasImageTerm = imageTerms.some((term) => lowerMessage.includes(term));
+    const hasActionTerm = actionTerms.some((term) => lowerMessage.includes(term));
+
+    const patterns = [
+      /\b(an?|the)\s+(image|picture|photo|illustration)\s+of\b/i,
+      /\bshow\s+me\s+(an?|the|some)\s+(image|picture|photo)\b/i,
+      /\b(generate|create|make|draw)\s+.*\s+(image|picture|photo|illustration)\b/i
+    ];
+
+    const hasPattern = patterns.some((pattern) => pattern.test(message));
+    return (hasImageTerm && hasActionTerm) || hasPattern;
+  }, []);
+
+  // Poll for new messages (used when WebSocket might be unreliable)
+  const pollForMessages = useCallback(async (sessionId: string, expectedMessageCount: number) => {
+    if (!idToken) return;
+
+    // Clear any existing polling for this session
+    const existingInterval = activePollingIntervalsRef.current.get(sessionId);
+    if (existingInterval) {
+      clearInterval(existingInterval);
+      activePollingIntervalsRef.current.delete(sessionId);
+    }
+
+    const maxPolls = 30; // Poll for up to 5 minutes (30 * 10 seconds)
+    let pollCount = 0;
+
+    const pollInterval = setInterval(async () => {
+      try {
+        pollCount++;
+        const sessionData = await getSession(idToken, sessionId);
+
+        if (sessionData.messages.length > expectedMessageCount) {
+          // New message(s) found - update the UI
+          const currentMessages = messagesBySession[sessionId] || [];
+          const newMessages = sessionData.messages.filter(
+            msg => !currentMessages.some(existing => existing.messageId === msg.messageId)
+          );
+
+          if (newMessages.length > 0) {
+            updateMessages(sessionId, (messages) => [...messages, ...newMessages]);
+            clearInterval(pollInterval);
+            activePollingIntervalsRef.current.delete(sessionId);
+          }
+        }
+
+        // Stop polling after max attempts
+        if (pollCount >= maxPolls) {
+          clearInterval(pollInterval);
+          activePollingIntervalsRef.current.delete(sessionId);
+        }
+      } catch (error) {
+        console.error('Error polling for messages', error);
+        clearInterval(pollInterval);
+        activePollingIntervalsRef.current.delete(sessionId);
+      }
+    }, 10000); // Poll every 10 seconds
+
+    // Store the interval so we can cancel it if WebSocket delivers the result
+    activePollingIntervalsRef.current.set(sessionId, pollInterval);
+
+    // Cleanup function
+    return () => {
+      clearInterval(pollInterval);
+      activePollingIntervalsRef.current.delete(sessionId);
+    };
+  }, [idToken, messagesBySession, updateMessages]);
 
   const handleSendMessage = useCallback(async () => {
     if (!idToken || !connectionId || !composerValue.trim()) {
@@ -437,13 +718,34 @@ export function HomePage() {
         createdAt: new Date().toISOString(),
         createdBy: 'me'
       };
+      const messageContent = userMessage.content;
       updateMessages(sessionId, (messages) => [...messages, userMessage]);
       setComposerValue('');
 
-      await sendMessage(idToken, sessionId, {
-        message: userMessage.content,
-        connectionId
-      });
+      const isImageRequest = detectImageGenerationIntent(messageContent);
+
+      try {
+        await sendMessage(idToken, sessionId, {
+          message: messageContent,
+          connectionId
+        });
+      } catch (error) {
+        // For image generation requests, a 503 timeout is expected (>30s generation time)
+        // The image will be delivered via WebSocket or polling, so we can ignore this error
+        if (isImageRequest && error instanceof Error && error.message.includes('503')) {
+          console.log('Image generation request timed out (expected), waiting for WebSocket/polling delivery');
+        } else {
+          // For non-image requests or other errors, re-throw
+          throw error;
+        }
+      }
+
+      // If this is an image generation request, start polling as backup
+      // (in case WebSocket disconnects during the long generation time)
+      if (isImageRequest) {
+        const currentMessageCount = (messagesBySession[sessionId] || []).length + 1; // +1 for user message
+        pollForMessages(sessionId, currentMessageCount);
+      }
     } catch (error) {
       console.error('Failed to send message', error);
     } finally {
@@ -453,7 +755,10 @@ export function HomePage() {
     activeSession,
     connectionId,
     composerValue,
+    detectImageGenerationIntent,
     idToken,
+    messagesBySession,
+    pollForMessages,
     selectedModelId,
     selectedProviderId,
     updateMessages,
@@ -554,6 +859,30 @@ export function HomePage() {
           >
             {message.content}
           </ReactMarkdown>
+          {/* Image generation states */}
+          {message.imageGenerating && message.imageAspectRatio && !message.imageUrl && (
+            <div className='mt-3'>
+              <AnimatedImagePlaceholder aspectRatio={message.imageAspectRatio} />
+            </div>
+          )}
+          {message.imageUrl && (
+            <div className='mt-3 relative'>
+              <div className='overflow-hidden rounded-lg border border-border/30'>
+                <img
+                  src={message.imageUrl}
+                  alt={message.imagePrompt || 'Generated image'}
+                  className='h-auto max-w-full'
+                  loading='lazy'
+                />
+              </div>
+              {/* Show shimmer overlay while generating (for partials) */}
+              {message.imageGenerating && (
+                <div className='absolute inset-0 rounded-lg overflow-hidden pointer-events-none'>
+                  <div className='absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-shimmer-overlay' />
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -685,7 +1014,19 @@ export function HomePage() {
           id='chat-toolbar'
           className='relative flex flex-shrink-0 flex-col gap-4 md:flex-row md:items-center md:justify-between'
         >
-          <div className='pl-0 md:pl-8'>
+          {/* History toggle button - floating at top left (hide when pinned) */}
+          {!historyPinned && (
+            <button
+              type='button'
+              className='absolute -left-3 -top-3 z-40 flex h-10 w-10 items-center justify-center rounded-full border border-border/40 bg-background/90 text-muted-foreground shadow-lg transition hover:bg-background hover:text-foreground'
+              onClick={() => setHistoryOpen((value) => !value)}
+              aria-label='Toggle conversation history'
+            >
+              <History className='h-5 w-5' />
+            </button>
+          )}
+
+          <div className='pl-8 md:pl-8'>
             <h2 className='flex items-center gap-2 text-2xl font-semibold tracking-tight text-white'>
               <MessageCircleMore className='h-5 w-5 text-primary/80' /> Chat workspace
             </h2>
@@ -819,57 +1160,164 @@ export function HomePage() {
                 className='flex flex-shrink-0 items-center justify-between gap-3 border-b border-border/30 p-4 text-sm text-muted-foreground'
               >
                 {activeSession ? (
-                  <div>
-                    <p className='font-medium text-foreground'>
-                      {activeSession.title || 'Untitled conversation'}
-                    </p>
-                    <p className='text-xs uppercase tracking-wide'>
-                      {activeSession.providerInstanceName} • {activeSession.model}
-                    </p>
-                  </div>
-                ) : (
-                  <p>Select a conversation or start a new chat.</p>
-                )}
-                <div className='text-xs uppercase tracking-wide text-muted-foreground/80'>
-                  {currentMessages.length} messages
-                </div>
-              </div>
-
-              {/* Messages - scrollable middle section */}
-              <div
-                id='chat-messages'
-                ref={messagesViewportRef}
-                className='flex-1 overflow-y-auto overflow-x-hidden p-4'
-              >
-                <div className='flex flex-col gap-3'>
-                  {activeSession ? (
-                    currentMessages.length > 0 ? (
-                      currentMessages.map(renderMessage)
-                    ) : (
-                      <div className='flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground'>
-                        <Sparkles className='h-5 w-5 text-[#EC5763]' />
-                        <p>Ready to chat!</p>
-                        <p className='text-xs text-muted-foreground/80'>
-                          Type your message below to begin the conversation.
-                        </p>
-                      </div>
-                    )
-                  ) : (
-                    <div className='flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground'>
-                      <MessageCircleMore className='h-8 w-8 text-muted-foreground/50' />
-                      <p>No conversation selected.</p>
-                      <p className='text-xs text-muted-foreground/80'>
-                        Choose a previous chat or click "New chat" to begin.
+                  <>
+                    <div>
+                      <p className='font-medium text-foreground'>
+                        {activeSession.title || 'Untitled conversation'}
+                      </p>
+                      <p className='text-xs uppercase tracking-wide'>
+                        {activeSession.providerInstanceName} • {activeSession.model}
                       </p>
                     </div>
-                  )}
-                  {assistantStream && assistantStream.sessionId === activeSessionId ? (
-                    <div className='flex items-center gap-2 text-sm text-muted-foreground'>
-                      <Loader2 className='h-4 w-4 animate-spin text-primary/80' />
-                      <span>Assistant is thinking…</span>
+                    <div className='flex items-center gap-3'>
+                      <div className='text-right text-xs uppercase tracking-wide text-muted-foreground/80'>
+                        {tokenStats.total > 0 ? (
+                          <>
+                            <div>{tokenStats.total.toLocaleString()} tokens</div>
+                            <div className='flex items-center justify-end gap-2 text-[0.65rem] normal-case'>
+                              <span className='flex items-center gap-1 group relative'>
+                                <ArrowUp className='h-3 w-3' />
+                                {tokenStats.sent.toLocaleString()}
+                                <span className='absolute bottom-full mb-1 hidden group-hover:block whitespace-nowrap rounded bg-black/90 px-2 py-1 text-[0.65rem] text-white'>
+                                  Sent
+                                </span>
+                              </span>
+                              <span className='flex items-center gap-1 group relative'>
+                                <ArrowDown className='h-3 w-3' />
+                                {tokenStats.received.toLocaleString()}
+                                <span className='absolute bottom-full mb-1 hidden group-hover:block whitespace-nowrap rounded bg-black/90 px-2 py-1 text-[0.65rem] text-white'>
+                                  Received
+                                </span>
+                              </span>
+                            </div>
+                          </>
+                        ) : (
+                          <div>{currentMessages.length} messages</div>
+                        )}
+                      </div>
+                      <Button
+                        type='button'
+                        size='icon'
+                        variant='ghost'
+                        className='h-8 w-8 rounded-full border border-border/40 text-muted-foreground transition hover:text-foreground'
+                        onClick={() => setSystemPromptOpen((value) => !value)}
+                        aria-label='System prompt'
+                      >
+                        <Settings className='h-4 w-4' />
+                      </Button>
                     </div>
-                  ) : null}
+                  </>
+                ) : null}
+              </div>
+
+              {/* Messages and System Prompt - scrollable middle section */}
+              <div className='flex flex-1 min-h-0 overflow-hidden'>
+                {/* Messages panel */}
+                <div
+                  id='chat-messages'
+                  ref={messagesViewportRef}
+                  className={cn(
+                    'flex-1 overflow-y-auto overflow-x-hidden p-4 transition-all',
+                    systemPromptOpen && 'hidden md:block md:flex-1'
+                  )}
+                >
+                  <div className='flex flex-col gap-3'>
+                    {activeSession ? (
+                      currentMessages.length > 0 ? (
+                        currentMessages.map(renderMessage)
+                      ) : (
+                        <div className='flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground'>
+                          <Sparkles className='h-5 w-5 text-[#EC5763]' />
+                          <p>Ready to chat!</p>
+                          <p className='text-xs text-muted-foreground/80'>
+                            Type your message below to begin the conversation.
+                          </p>
+                        </div>
+                      )
+                    ) : (
+                      <div className='flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground'>
+                        <MessageCircleMore className='h-8 w-8 text-muted-foreground/50' />
+                        <p>No conversation selected.</p>
+                        <p className='text-xs text-muted-foreground/80'>
+                          Choose a previous chat or click "New chat" to begin.
+                        </p>
+                      </div>
+                    )}
+                    {assistantStream && assistantStream.sessionId === activeSessionId ? (
+                      <div className='flex items-center gap-2 text-sm text-muted-foreground'>
+                        <Loader2 className='h-4 w-4 animate-spin text-primary/80' />
+                        <span>Assistant is thinking…</span>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
+
+                {/* System prompt panel */}
+                {systemPromptOpen && (
+                  <div
+                    id='system-prompt-panel'
+                    className={cn(
+                      'flex flex-col border-l border-border/30 bg-background/60 p-4',
+                      'w-full md:w-96 md:flex-shrink-0'
+                    )}
+                  >
+                    <div className='mb-4 flex items-center justify-between'>
+                      <h3 className='text-sm font-semibold text-foreground'>System Instructions</h3>
+                      <Button
+                        type='button'
+                        size='icon'
+                        variant='ghost'
+                        className='h-8 w-8 rounded-full border border-border/40'
+                        onClick={() => setSystemPromptOpen(false)}
+                        aria-label='Close system prompt'
+                      >
+                        <X className='h-4 w-4' />
+                      </Button>
+                    </div>
+                    <p className='mb-4 text-xs text-muted-foreground'>
+                      Add system-level instructions to guide the assistant's behavior for this conversation.
+                    </p>
+                    <textarea
+                      rows={8}
+                      value={systemPromptValue}
+                      onChange={(event) => setSystemPromptValue(event.target.value)}
+                      placeholder='Enter system instructions here…'
+                      className='mb-4 flex-1 resize-none rounded-lg border border-border/30 bg-background/60 px-3 py-2 text-sm text-foreground shadow-inner focus-visible:outline-none focus-visible:ring focus-visible:ring-ring'
+                    />
+                    <Button
+                      type='button'
+                      className='bg-[#EC5763] text-white shadow-md transition hover:bg-[#f47180]'
+                      onClick={async () => {
+                        if (!idToken || !activeSession || !systemPromptValue.trim()) return;
+
+                        const systemMessage: ChatMessage = {
+                          messageId: `local-system-${Date.now()}`,
+                          role: 'system',
+                          content: systemPromptValue.trim(),
+                          createdAt: new Date().toISOString(),
+                          createdBy: 'user'
+                        };
+
+                        updateMessages(activeSession.sessionId, (messages) => [...messages, systemMessage]);
+
+                        try {
+                          await sendMessage(idToken, activeSession.sessionId, {
+                            message: systemPromptValue.trim(),
+                            role: 'system'
+                          });
+                          setSystemPromptValue('');
+                          setSystemPromptOpen(false);
+                        } catch (error) {
+                          console.error('Failed to send system message', error);
+                        }
+                      }}
+                      disabled={!systemPromptValue.trim() || !activeSession}
+                    >
+                      <Send className='mr-2 h-4 w-4' />
+                      Add System Message
+                    </Button>
+                  </div>
+                )}
               </div>
 
               {/* Composer - fixed at bottom */}
@@ -898,12 +1346,12 @@ export function HomePage() {
                 <Button
                   type='button'
                   size='icon'
-                  className='h-9 w-9 flex-shrink-0 bg-[#EC5763] text-white shadow-md transition hover:bg-[#f47180]'
+                  className='h-16 w-16 flex-shrink-0 bg-[#EC5763] text-white shadow-md transition hover:bg-[#f47180]'
                   onClick={handleSendMessage}
                   disabled={!activeSession || sending || !composerValue.trim() || !connectionId}
                   aria-label='Send message'
                 >
-                  {sending ? <Loader2 className='h-4 w-4 animate-spin' /> : <Send className='h-4 w-4' />}
+                  {sending ? <Loader2 className='h-5 w-5 animate-spin' /> : <Send className='h-5 w-5' />}
                 </Button>
               </div>
             </div>

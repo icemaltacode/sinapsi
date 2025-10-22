@@ -1,8 +1,8 @@
+@import 'highlight.js/styles/github-dark.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-@import 'highlight.js/styles/github-dark.css';
 
 :root {
   --background: 216 71% 4%;
@@ -57,4 +57,39 @@
 
 body {
   @apply min-h-screen bg-background text-foreground antialiased;
+}
+
+/* Animated image placeholder shimmer effect */
+@keyframes shimmer {
+  0% {
+    background-position: -400px 0;
+  }
+  100% {
+    background-position: 400px 0;
+  }
+}
+
+.image-placeholder {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted)) 0%,
+    hsl(var(--muted-foreground) / 0.2) 50%,
+    hsl(var(--muted)) 100%
+  );
+  background-size: 400px 100%;
+  animation: shimmer 2s infinite linear;
+}
+
+/* Shimmer overlay for partial images */
+@keyframes shimmer-overlay {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.animate-shimmer-overlay {
+  animation: shimmer-overlay 1.5s infinite ease-in-out;
 }

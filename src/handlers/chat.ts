@@ -4,6 +4,7 @@ import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand
 } from '@aws-sdk/client-apigatewaymanagementapi';
+import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import type { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import OpenAI from 'openai';
 
@@ -41,14 +42,21 @@ type ResponseMessageInput = {
 };
 
 const WEBSOCKET_MANAGEMENT_URL = process.env.WEBSOCKET_MANAGEMENT_URL;
+const GENERATED_IMAGES_BUCKET = process.env.GENERATED_IMAGES_BUCKET;
 
 if (!WEBSOCKET_MANAGEMENT_URL) {
   throw new Error('WEBSOCKET_MANAGEMENT_URL is not configured');
 }
 
+if (!GENERATED_IMAGES_BUCKET) {
+  throw new Error('GENERATED_IMAGES_BUCKET is not configured');
+}
+
 const wsClient = new ApiGatewayManagementApiClient({
   endpoint: WEBSOCKET_MANAGEMENT_URL
 });
+
+const s3Client = new S3Client({});
 
 const modelCache = new Map<string, { expiresAt: number; models: ProviderModel[] }>();
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -223,6 +231,244 @@ const sendToConnection = async (connectionId: string, payload: unknown) => {
   }
 };
 
+const detectImageGenerationIntent = (message: string): boolean => {
+  const lowerMessage = message.toLowerCase();
+
+  // Image-related keywords
+  const imageTerms = ['image', 'picture', 'photo', 'illustration', 'drawing', 'artwork', 'graphic'];
+  const actionTerms = ['generate', 'create', 'make', 'draw', 'produce', 'design', 'show me'];
+
+  // Check if message contains both action and image terms
+  const hasImageTerm = imageTerms.some((term) => lowerMessage.includes(term));
+  const hasActionTerm = actionTerms.some((term) => lowerMessage.includes(term));
+
+  // Common patterns
+  const patterns = [
+    /\b(an?|the)\s+(image|picture|photo|illustration)\s+of\b/i,
+    /\bshow\s+me\s+(an?|the|some)\s+(image|picture|photo)\b/i,
+    /\b(generate|create|make|draw)\s+.*\s+(image|picture|photo|illustration)\b/i
+  ];
+
+  const hasPattern = patterns.some((pattern) => pattern.test(message));
+
+  return (hasImageTerm && hasActionTerm) || hasPattern;
+};
+
+const supportsNativeImageGeneration = (model: string): boolean => {
+  const lowerModel = model.toLowerCase();
+
+  // GPT-4o, GPT-4.1, GPT-5, and o-series models support native image generation
+  return (
+    lowerModel.includes('gpt-4o') ||
+    lowerModel.includes('gpt-4.1') ||
+    lowerModel.includes('gpt-5') ||
+    lowerModel.startsWith('o1') ||
+    lowerModel.startsWith('o3') ||
+    lowerModel.startsWith('o4')
+  );
+};
+
+const detectAspectRatio = async (prompt: string, apiKey: string): Promise<'portrait' | 'landscape' | 'square'> => {
+  try {
+    console.log(`Image generation: Detecting aspect ratio for: ${prompt.substring(0, 50)}...`);
+
+    const client = new OpenAI({ apiKey, timeout: 5000 });
+
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{
+        role: 'user',
+        content: `For this image: "${prompt}". What aspect ratio is best? Answer with only one word: portrait, landscape, or square`
+      }],
+      temperature: 0,
+      max_tokens: 5
+    });
+
+    const result = response.choices[0]?.message?.content?.trim().toLowerCase();
+
+    if (result === 'portrait' || result === 'landscape' || result === 'square') {
+      console.log(`Image generation: Aspect ratio detected: ${result}`);
+      return result;
+    }
+
+    console.warn(`Image generation: Invalid aspect ratio response "${result}", defaulting to square`);
+    return 'square';
+  } catch (error) {
+    console.error('Image generation: Aspect ratio detection failed', error);
+    return 'square'; // Default on error
+  }
+};
+
+const generateImageWithDallE = async (
+  client: OpenAI,
+  prompt: string
+): Promise<string> => {
+  try {
+    const response = await client.images.generate({
+      model: 'dall-e-3',
+      prompt,
+      n: 1,
+      size: '1024x1024',
+      quality: 'standard'
+    });
+
+    const imageUrl = response.data?.[0]?.url;
+    if (!imageUrl) {
+      throw new Error('No image URL returned from DALL-E');
+    }
+
+    return imageUrl;
+  } catch (error) {
+    console.error('DALL-E image generation failed', error);
+    throw error;
+  }
+};
+
+const generateImageNative = async (
+  client: OpenAI,
+  model: string,
+  prompt: string,
+  connectionId: string,
+  sessionId: string,
+  messageId: string,
+  size: '1024x1024' | '1024x1536' | '1536x1024' = '1024x1024'
+): Promise<string> => {
+  try {
+    const startTime = Date.now();
+    console.log(`Image generation: Starting with size ${size}, requesting 3 partials`);
+
+    // Use streaming to get progress updates
+    const stream = client.responses.stream({
+      model,
+      input: [{ role: 'user', content: prompt }],
+      tools: [
+        {
+          type: 'image_generation',
+          size,
+          partial_images: 3  // Request 3 partial images during generation
+        }
+      ]
+    });
+
+    let imageResult: string | null = null;
+    let lastPartialUploadTime = 0;
+    let partialCount = 0;
+    const PARTIAL_UPLOAD_THROTTLE_MS = 10000; // Upload partials every 10 seconds
+
+    for await (const event of stream) {
+
+      if (event.type === 'response.image_generation_call.generating') {
+        // Send progress update
+        await sendToConnection(connectionId, {
+          type: 'assistant.image.progress',
+          sessionId,
+          messageId,
+          message: 'Generating image...'
+        });
+      } else if (event.type === 'response.image_generation_call.partial_image') {
+        // Throttle partial uploads to avoid spam (every 10 seconds)
+        const now = Date.now();
+        if (now - lastPartialUploadTime >= PARTIAL_UPLOAD_THROTTLE_MS) {
+          partialCount++;
+          const partialImageData = (event as { partial_image_b64?: string }).partial_image_b64;
+          if (partialImageData) {
+            console.log(`Image generation: Uploading partial ${partialCount}/3 to S3`);
+            try {
+              // Convert base64 to buffer
+              const imageBuffer = Buffer.from(partialImageData, 'base64');
+
+              // Upload to S3 with partials/ prefix (will be auto-deleted after 1 day)
+              const partialFilename = `partials/${sessionId}/${messageId}/${Date.now()}.png`;
+              await s3Client.send(
+                new PutObjectCommand({
+                  Bucket: GENERATED_IMAGES_BUCKET,
+                  Key: partialFilename,
+                  Body: imageBuffer,
+                  ContentType: 'image/png',
+                  ACL: 'public-read'
+                })
+              );
+
+              // Send S3 URL via WebSocket
+              const region = process.env.AWS_REGION || 'eu-south-1';
+              const partialImageUrl = `https://${GENERATED_IMAGES_BUCKET}.s3.${region}.amazonaws.com/${partialFilename}`;
+
+              await sendToConnection(connectionId, {
+                type: 'assistant.image.partial',
+                sessionId,
+                messageId,
+                imageUrl: partialImageUrl,
+                partialCount
+              });
+
+              lastPartialUploadTime = now;
+              console.log(`Image generation: Partial ${partialCount}/3 uploaded to S3`);
+            } catch (error) {
+              console.error('Failed to upload partial image, continuing...', error);
+              // Don't throw - partial upload failure shouldn't kill the whole generation
+            }
+          }
+        }
+      }
+    }
+
+    // Get the final response
+    const finalResponse = await stream.finalResponse();
+    console.log('Final response status:', finalResponse.status);
+
+    // Extract image data from output
+    const imageOutput = finalResponse.output?.find(
+      (item: { type?: string }) => item.type === 'image_generation_call'
+    ) as { result?: string | null; status?: string } | undefined;
+
+    if (!imageOutput) {
+      throw new Error('No image_generation_call in response output');
+    }
+
+    if (imageOutput.status === 'failed') {
+      throw new Error('Image generation failed');
+    }
+
+    if (!imageOutput.result) {
+      throw new Error('No image data in response');
+    }
+
+    imageResult = imageOutput.result;
+
+    // The result is base64 encoded - upload to S3
+    console.log('Image returned as base64, uploading to S3...');
+
+    // Convert base64 to buffer
+    const imageBuffer = Buffer.from(imageResult, 'base64');
+
+    // Generate unique filename
+    const filename = `${sessionId}/${messageId}.png`;
+
+    // Upload to S3
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: GENERATED_IMAGES_BUCKET,
+        Key: filename,
+        Body: imageBuffer,
+        ContentType: 'image/png',
+        ACL: 'public-read'
+      })
+    );
+
+    // Construct the public URL
+    const region = process.env.AWS_REGION || 'eu-south-1';
+    const imageUrl = `https://${GENERATED_IMAGES_BUCKET}.s3.${region}.amazonaws.com/${filename}`;
+
+    const duration = Date.now() - startTime;
+    console.log(`Image generation: Final image uploaded to S3`);
+    console.log(`Image generation: Complete in ${duration}ms`);
+    return imageUrl;
+  } catch (error) {
+    console.error('Native image generation failed', error);
+    throw error;
+  }
+};
+
 const mapEventsToInput = (events: SessionEventItem[]): ResponseMessageInput[] =>
   events
     .filter((event) => event.eventType === 'message')
@@ -249,6 +495,8 @@ const toChatMessageResponse = (message: SessionEventItem) => ({
   messageId: message.messageId,
   role: message.role,
   content: message.content,
+  imageUrl: message.imageUrl,
+  imagePrompt: message.imagePrompt,
   createdAt: message.createdAt,
   provider: message.provider,
   createdBy: message.createdBy,
@@ -526,11 +774,14 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
   const payload = JSON.parse(event.body) as {
     message?: string;
     connectionId?: string;
+    role?: 'user' | 'system';
   };
 
   if (!payload.message || !payload.message.trim()) {
     return badRequest('message is required');
   }
+
+  const messageRole = payload.role ?? 'user';
 
   try {
     let session = await getSession(userId, sessionId);
@@ -565,7 +816,7 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
       sessionId,
       isoTimestamp: now.toISOString(),
       messageId: userMessageId,
-      role: 'user',
+      role: messageRole,
       content: payload.message.trim(),
       provider: providerKey,
       createdBy: userId
@@ -574,6 +825,139 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
     session = await updateSessionMetadata(session, {
       lastInteractionAt: now.toISOString()
     });
+
+    // If this is a system message, don't trigger assistant response
+    if (messageRole === 'system') {
+      return ok({
+        sessionId,
+        userMessageId
+      });
+    }
+
+    // Check if this is an image generation request
+    if (detectImageGenerationIntent(payload.message.trim())) {
+      const assistantMessageId = randomUUID();
+      const userPrompt = payload.message.trim();
+
+      // Image generation runs in this handler
+      // API Gateway may timeout after 30s, but Lambda will keep running (900s timeout)
+      // Image will be delivered via WebSocket + polling on frontend
+      await (async () => {
+        let imageUrl: string | undefined;
+        let imageGenerationError: Error | undefined;
+
+        try {
+          if (supportsNativeImageGeneration(session.model)) {
+            // Detect aspect ratio first
+            const aspectRatio = await detectAspectRatio(userPrompt, apiKey);
+
+            // Send aspect ratio to frontend so it can show placeholder
+            await sendToConnection(connectionId, {
+              type: 'assistant.image.aspect_detected',
+              sessionId,
+              messageId: assistantMessageId,
+              aspectRatio
+            });
+
+            // Map aspect ratio to image size
+            const size = aspectRatio === 'portrait' ? '1024x1536' :
+                        aspectRatio === 'landscape' ? '1536x1024' :
+                        '1024x1024';
+
+            imageUrl = await generateImageNative(
+              client,
+              session.model,
+              userPrompt,
+              connectionId,
+              sessionId,
+              assistantMessageId,
+              size
+            );
+          } else {
+            // Fallback to DALL-E for models that don't support native image generation
+            await sendToConnection(connectionId, {
+              type: 'assistant.image.started',
+              sessionId,
+              messageId: assistantMessageId
+            });
+
+            imageUrl = await generateImageWithDallE(client, userPrompt);
+          }
+        } catch (error) {
+          console.error('Image generation failed', error);
+          imageGenerationError = error as Error;
+        }
+
+        // ALWAYS save to DynamoDB, even if image generation failed or WebSocket is gone
+        // This ensures the message appears in chat history
+        const assistantTimestamp = new Date().toISOString();
+        try {
+          if (imageUrl) {
+            // Successful image generation - save with image data
+            await saveMessage({
+              sessionId,
+              isoTimestamp: assistantTimestamp,
+              messageId: assistantMessageId,
+              role: 'assistant',
+              content: `Generated image: ${userPrompt}`,
+              imageUrl,
+              imagePrompt: userPrompt,
+              provider: providerKey,
+              createdBy: providerKey
+            });
+          } else {
+            // Image generation failed - save error message
+            await saveMessage({
+              sessionId,
+              isoTimestamp: assistantTimestamp,
+              messageId: assistantMessageId,
+              role: 'assistant',
+              content: `Failed to generate image: ${imageGenerationError?.message || 'Unknown error'}`,
+              provider: providerKey,
+              createdBy: providerKey
+            });
+          }
+
+          // Update session timestamp
+          await updateSessionMetadata(session, {
+            lastInteractionAt: assistantTimestamp
+          });
+
+          console.log('Image message saved to DynamoDB successfully');
+        } catch (dbError) {
+          console.error('CRITICAL: Failed to save image message to DynamoDB', dbError);
+        }
+
+        // Try to send via WebSocket (best effort - may fail if connection is gone)
+        try {
+          if (imageUrl) {
+            await sendToConnection(connectionId, {
+              type: 'assistant.image.completed',
+              sessionId,
+              messageId: assistantMessageId,
+              imageUrl,
+              prompt: userPrompt
+            });
+          } else {
+            await sendToConnection(connectionId, {
+              type: 'assistant.error',
+              sessionId,
+              messageId: assistantMessageId,
+              message: 'Failed to generate image. Please try again.'
+            });
+          }
+        } catch (wsError) {
+          console.warn('WebSocket send failed (connection may be gone), but message saved to DB', wsError);
+        }
+      })();
+
+      // Return after image is complete (or API Gateway times out after 30s, whichever comes first)
+      return ok({
+        sessionId,
+        userMessageId,
+        assistantMessageId
+      });
+    }
 
     const history = await listMessages(sessionId);
     const inputMessages = mapEventsToInput(history);

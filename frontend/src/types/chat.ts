@@ -28,6 +28,11 @@ export interface ChatMessage {
   messageId: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  imageUrl?: string;
+  imagePrompt?: string;
+  imageAspectRatio?: 'portrait' | 'landscape' | 'square';
+  imageGenerating?: boolean;  // True while waiting for final image
+  partialCount?: number;       // Track which partial (1, 2, 3)
   createdAt: string;
   provider?: string;
   createdBy: string;
