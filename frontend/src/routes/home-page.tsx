@@ -26,6 +26,8 @@ import rehypeHighlight from 'rehype-highlight';
 import { useAuth } from '../context/auth-context';
 import { cn } from '../lib/utils';
 import { TokenDebugPanel } from './token-console';
+import { ModelSelector } from '../components/ModelSelector';
+import { ProviderSelector } from '../components/ProviderSelector';
 import {
   createSession,
   deleteSession as deleteSessionRequest,
@@ -1060,47 +1062,42 @@ export function HomePage() {
               <label htmlFor='provider' className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>
                 Provider instance
               </label>
-              <select
-                id='provider'
-                className='h-11 rounded-lg border border-border/50 bg-background/80 px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring focus-visible:ring-ring'
-                value={selectedProviderId ?? ''}
-                onChange={(event) => {
-                  const nextProvider = providers.find((provider) => provider.providerId === event.target.value);
-                  setSelectedProviderId(event.target.value || null);
-                  setSelectedModelId(nextProvider?.models[0]?.id ?? null);
-                }}
-              >
-                {providersLoading ? <option>Loading providers...</option> : null}
-                {!providersLoading && providers.length === 0 ? <option value=''>No providers available</option> : null}
-                {providers.map((provider) => (
-                  <option key={provider.providerId} value={provider.providerId}>
-                    {provider.instanceName} ({provider.providerType.toUpperCase()})
-                  </option>
-                ))}
-              </select>
+              {providersLoading ? (
+                <div className='flex h-11 items-center rounded-lg border border-border/50 bg-background/80 px-3 text-sm text-muted-foreground'>
+                  Loading providers...
+                </div>
+              ) : providers.length === 0 ? (
+                <div className='flex h-11 items-center rounded-lg border border-border/50 bg-background/80 px-3 text-sm text-muted-foreground'>
+                  No providers available
+                </div>
+              ) : (
+                <ProviderSelector
+                  providers={providers}
+                  selectedProviderId={selectedProviderId}
+                  onProviderChange={(providerId) => {
+                    const nextProvider = providers.find((provider) => provider.providerId === providerId);
+                    setSelectedProviderId(providerId);
+                    setSelectedModelId(nextProvider?.models[0]?.id ?? null);
+                  }}
+                />
+              )}
             </div>
 
             <div className='flex flex-col gap-2'>
               <label htmlFor='model' className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>
                 Model
               </label>
-              <select
-                id='model'
-                className='h-11 rounded-lg border border-border/50 bg-background/80 px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring focus-visible:ring-ring'
-                value={selectedModelId ?? ''}
-                onChange={(event) => setSelectedModelId(event.target.value || null)}
-                disabled={!currentProvider}
-              >
-                {currentProvider ? (
-                  currentProvider.models.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.label}
-                    </option>
-                  ))
-                ) : (
-                  <option value=''>Select a provider first</option>
-                )}
-              </select>
+              {!currentProvider ? (
+                <div className='flex h-11 items-center rounded-lg border border-border/50 bg-background/80 px-3 text-sm text-muted-foreground'>
+                  Select a provider first
+                </div>
+              ) : (
+                <ModelSelector
+                  models={currentProvider.models}
+                  selectedModelId={selectedModelId}
+                  onModelChange={(modelId) => setSelectedModelId(modelId)}
+                />
+              )}
             </div>
 
             <div className='md:col-span-2 flex items-center justify-end'>

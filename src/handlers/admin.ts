@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import type { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 
 import type { ProviderConfigItem, UserProfileItem } from '../lib/dynamo';
 import { DEFAULT_USER_TEMP_PASSWORD } from '../lib/env';
 import { badRequest, conflict, created, ok, serverError } from '../lib/response';
+import { getModelCache, saveModelCache } from '../repositories/model-cache';
 import {
   deleteProviderConfig,
   getProviderConfig,
@@ -12,6 +14,7 @@ import {
   saveProviderConfig
 } from '../repositories/providers';
 import { upsertQuota } from '../repositories/quotas';
+import { refreshModelsForProvider } from '../services/model-refresh';
 import {
   deleteProviderApiKey,
   getProviderApiKey,
@@ -80,7 +83,7 @@ const sanitizeUser = (user: UserProfileItem) => ({
 
 const parseJson = <T>(body: string): T => JSON.parse(body);
 
-const PROVIDER_TYPES = new Set(['gpt', 'copilot', 'claude', 'gemini']);
+const PROVIDER_TYPES = new Set(['openai', 'copilot', 'claude', 'gemini']);
 
 const slugify = (value: string) =>
   value
@@ -99,7 +102,7 @@ const guessProviderType = (config: ProviderConfigItem): string => {
 
   const id = config.provider.toLowerCase();
   if (id.includes('openai') || id.includes('gpt')) {
-    return 'gpt';
+    return 'openai';
   }
   if (id.includes('claude')) {
     return 'claude';
@@ -111,7 +114,7 @@ const guessProviderType = (config: ProviderConfigItem): string => {
     return 'copilot';
   }
 
-  return 'gpt';
+  return 'openai';
 };
 
 const mapProviderResponse = (config: ProviderConfigItem, apiKey: string) => ({
@@ -416,6 +419,193 @@ export const usage: APIGatewayProxyHandlerV2 = async (event) => {
     });
   } catch (error) {
     console.error('admin.usage error', error);
+    return serverError(error);
+  }
+};
+
+export const refreshModels: APIGatewayProxyHandlerV2 = async () => {
+  try {
+    console.log('[Admin] Manual model refresh requested - invoking async Lambda');
+
+    // Get list of providers that will be refreshed
+    const providers = await listProviderConfigs();
+    const openaiProviders = providers.filter(
+      (p) => p.status === 'active' && (p.provider.includes('openai') || p.provider.includes('gpt'))
+    );
+
+    const providerIds = openaiProviders.map((p) => p.provider);
+    console.log(`[Admin] Will refresh ${providerIds.length} providers: ${providerIds.join(', ')}`);
+
+    // Invoke the scheduled refresh Lambda asynchronously
+    const lambdaClient = new LambdaClient({});
+    const functionName = `sinapsi-${process.env.STAGE || 'dev'}-scheduledModelRefresh`;
+
+    await lambdaClient.send(
+      new InvokeCommand({
+        FunctionName: functionName,
+        InvocationType: 'Event', // Async invocation - don't wait for response
+        Payload: JSON.stringify({}) // Empty event payload
+      })
+    );
+
+    console.log(`[Admin] Async Lambda invocation sent to ${functionName}`);
+
+    // Return immediately - frontend will poll for completion
+    return ok({
+      message: 'Refresh started',
+      providers: providerIds
+    });
+  } catch (error) {
+    console.error('admin.refreshModels error', error);
+    return serverError(error);
+  }
+};
+
+export const getModelsCache: APIGatewayProxyHandlerV2 = async () => {
+  try {
+    console.log('[Admin] Fetching all model caches');
+    const providers = await listProviderConfigs();
+    const openaiProviders = providers.filter((p) =>
+      p.provider.includes('openai') || p.provider.includes('gpt')
+    );
+
+    const caches = await Promise.all(
+      openaiProviders.map(async (provider) => {
+        const cache = await getModelCache(provider.provider);
+        return {
+          providerId: provider.provider,
+          providerName: provider.instanceName || provider.provider,
+          models: cache?.models || [],
+          lastRefreshed: cache?.lastRefreshed || null
+        };
+      })
+    );
+
+    return ok({ providers: caches });
+  } catch (error) {
+    console.error('admin.getModelsCache error', error);
+    return serverError(error);
+  }
+};
+
+export const blacklistModel: APIGatewayProxyHandlerV2 = async (event) => {
+  try {
+    if (!event.body) {
+      return badRequest('Request body is required');
+    }
+
+    const payload = JSON.parse(event.body) as {
+      provider: string;
+      modelId: string;
+      blacklisted: boolean;
+    };
+
+    if (!payload.provider || !payload.modelId || payload.blacklisted === undefined) {
+      return badRequest('provider, modelId, and blacklisted are required');
+    }
+
+    console.log(`[Admin] ${payload.blacklisted ? 'Blacklisting' : 'Un-blacklisting'} model ${payload.modelId} for provider ${payload.provider}`);
+
+    const cache = await getModelCache(payload.provider);
+    if (!cache) {
+      return badRequest(`No cache found for provider ${payload.provider}`);
+    }
+
+    // Update the blacklist flag for the specified model
+    const updatedModels = cache.models.map((m) =>
+      m.id === payload.modelId && m.source === 'curated'
+        ? { ...m, blacklisted: payload.blacklisted }
+        : m
+    );
+
+    // Save back to DynamoDB
+    await saveModelCache(payload.provider, updatedModels, 'manual');
+
+    return ok({ success: true });
+  } catch (error) {
+    console.error('admin.blacklistModel error', error);
+    return serverError(error);
+  }
+};
+
+export const addManualModel: APIGatewayProxyHandlerV2 = async (event) => {
+  try {
+    if (!event.body) {
+      return badRequest('Request body is required');
+    }
+
+    const payload = JSON.parse(event.body) as {
+      provider: string;
+      modelId: string;
+      displayName: string;
+      supportsImageGeneration: boolean;
+    };
+
+    if (!payload.provider || !payload.modelId || !payload.displayName || payload.supportsImageGeneration === undefined) {
+      return badRequest('provider, modelId, displayName, and supportsImageGeneration are required');
+    }
+
+    console.log(`[Admin] Adding manual model ${payload.modelId} to provider ${payload.provider}`);
+
+    const cache = await getModelCache(payload.provider);
+    const existingModels = cache?.models || [];
+
+    // Check if model already exists
+    if (existingModels.some((m) => m.id === payload.modelId)) {
+      return badRequest(`Model ${payload.modelId} already exists in cache`);
+    }
+
+    // Add new manual model
+    const newModel = {
+      id: payload.modelId,
+      label: payload.displayName,
+      supportsImageGeneration: payload.supportsImageGeneration,
+      source: 'manual' as const,
+      blacklisted: false
+    };
+
+    const updatedModels = [...existingModels, newModel];
+
+    await saveModelCache(payload.provider, updatedModels, 'manual');
+
+    return ok({ success: true, model: newModel });
+  } catch (error) {
+    console.error('admin.addManualModel error', error);
+    return serverError(error);
+  }
+};
+
+export const deleteManualModel: APIGatewayProxyHandlerV2 = async (event) => {
+  try {
+    const query = event.queryStringParameters ?? {};
+    const provider = query.provider;
+    const modelId = query.modelId;
+
+    if (!provider || !modelId) {
+      return badRequest('provider and modelId query parameters are required');
+    }
+
+    console.log(`[Admin] Deleting manual model ${modelId} from provider ${provider}`);
+
+    const cache = await getModelCache(provider);
+    if (!cache) {
+      return badRequest(`No cache found for provider ${provider}`);
+    }
+
+    // Remove the manual model
+    const updatedModels = cache.models.filter(
+      (m) => !(m.id === modelId && m.source === 'manual')
+    );
+
+    if (updatedModels.length === cache.models.length) {
+      return badRequest(`Manual model ${modelId} not found in cache`);
+    }
+
+    await saveModelCache(provider, updatedModels, 'manual');
+
+    return ok({ success: true });
+  } catch (error) {
+    console.error('admin.deleteManualModel error', error);
     return serverError(error);
   }
 };

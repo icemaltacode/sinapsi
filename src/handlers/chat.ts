@@ -9,6 +9,7 @@ import type { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import OpenAI from 'openai';
 
 import { getUserId } from '../lib/auth';
+import { detectImageAspectRatio } from '../lib/baldrick';
 import type { SessionEventItem, SessionSummaryItem } from '../lib/dynamo';
 import { badRequest, ok, serverError } from '../lib/response';
 import {
@@ -20,6 +21,7 @@ import {
   saveMessage,
   updateSessionMetadata
 } from '../repositories/chat-sessions';
+import { getModelCache, isCacheStale } from '../repositories/model-cache';
 import { getProviderConfig, listProviderConfigs } from '../repositories/providers';
 import { deleteConnection as removeConnection, getConnection } from '../repositories/websocket-connections';
 import { getProviderApiKey } from '../services/provider-secrets';
@@ -27,6 +29,9 @@ import { getProviderApiKey } from '../services/provider-secrets';
 type ProviderModel = {
   id: string;
   label: string;
+  supportsImageGeneration?: boolean | null;
+  supportsTTS?: boolean | null;
+  supportsTranscription?: boolean | null;
 };
 
 type ProviderEntry = {
@@ -68,7 +73,7 @@ const guessProviderType = (providerId: string, providerType?: string): string =>
 
   const id = providerId.toLowerCase();
   if (id.includes('openai') || id.includes('gpt')) {
-    return 'gpt';
+    return 'openai';
   }
   if (id.includes('claude')) {
     return 'claude';
@@ -80,7 +85,7 @@ const guessProviderType = (providerId: string, providerType?: string): string =>
     return 'copilot';
   }
 
-  return 'gpt';
+  return 'openai';
 };
 
 const formatModelLabel = (modelId: string) =>
@@ -195,20 +200,56 @@ const listModelsForProvider = async (
   providerId: string,
   providerType: string
 ): Promise<ProviderModel[]> => {
-  const cacheKey = `${providerType}:${providerId}`;
-  const cached = modelCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.models;
+  // Check in-memory cache first (5 minute TTL)
+  const memCacheKey = `${providerType}:${providerId}`;
+  const memCached = modelCache.get(memCacheKey);
+  if (memCached && memCached.expiresAt > Date.now()) {
+    return memCached.models;
   }
+
+  // Try DynamoDB cache (7 day TTL)
+  try {
+    const dbCache = await getModelCache(providerId);
+    if (dbCache && !isCacheStale(dbCache)) {
+      console.log(`[Model Cache] Using cached models from DynamoDB for ${providerId} (${dbCache.models.length} models)`);
+
+      // Filter out blacklisted models
+      const models: ProviderModel[] = dbCache.models
+        .filter((m) => !m.blacklisted)
+        .map((m) => ({
+          id: m.id,
+          label: m.label,
+          supportsImageGeneration: m.supportsImageGeneration,
+          supportsTTS: m.supportsTTS,
+          supportsTranscription: m.supportsTranscription
+        }));
+
+      // Update in-memory cache
+      modelCache.set(memCacheKey, { models, expiresAt: Date.now() + MODEL_CACHE_TTL_MS });
+
+      return models;
+    }
+
+    if (dbCache && isCacheStale(dbCache)) {
+      console.warn(`[Model Cache] Cache is stale for ${providerId} (last refresh: ${dbCache.lastRefreshed})`);
+    }
+  } catch (error) {
+    console.error('[Model Cache] Failed to read from DynamoDB, falling back to dynamic fetch:', error);
+  }
+
+  // Fallback: Dynamic fetch from provider API
+  console.warn(`[Model Cache] Cache miss for ${providerId}, using dynamic fetch`);
 
   let models: ProviderModel[] = [];
 
-  if (providerType === 'gpt') {
+  if (providerType === 'openai') {
     const apiKey = await getProviderApiKey(providerId);
     models = await fetchOpenAIModels(apiKey);
   }
 
-  modelCache.set(cacheKey, { models, expiresAt: Date.now() + MODEL_CACHE_TTL_MS });
+  // Update in-memory cache
+  modelCache.set(memCacheKey, { models, expiresAt: Date.now() + MODEL_CACHE_TTL_MS });
+
   return models;
 };
 
@@ -266,37 +307,6 @@ const supportsNativeImageGeneration = (model: string): boolean => {
     lowerModel.startsWith('o3') ||
     lowerModel.startsWith('o4')
   );
-};
-
-const detectAspectRatio = async (prompt: string, apiKey: string): Promise<'portrait' | 'landscape' | 'square'> => {
-  try {
-    console.log(`Image generation: Detecting aspect ratio for: ${prompt.substring(0, 50)}...`);
-
-    const client = new OpenAI({ apiKey, timeout: 5000 });
-
-    const response = await client.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [{
-        role: 'user',
-        content: `For this image: "${prompt}". What aspect ratio is best? Answer with only one word: portrait, landscape, or square`
-      }],
-      temperature: 0,
-      max_tokens: 5
-    });
-
-    const result = response.choices[0]?.message?.content?.trim().toLowerCase();
-
-    if (result === 'portrait' || result === 'landscape' || result === 'square') {
-      console.log(`Image generation: Aspect ratio detected: ${result}`);
-      return result;
-    }
-
-    console.warn(`Image generation: Invalid aspect ratio response "${result}", defaulting to square`);
-    return 'square';
-  } catch (error) {
-    console.error('Image generation: Aspect ratio detection failed', error);
-    return 'square'; // Default on error
-  }
 };
 
 const generateImageWithDallE = async (
@@ -848,8 +858,8 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
 
         try {
           if (supportsNativeImageGeneration(session.model)) {
-            // Detect aspect ratio first
-            const aspectRatio = await detectAspectRatio(userPrompt, apiKey);
+            // Detect aspect ratio first using Baldrick
+            const aspectRatio = await detectImageAspectRatio(userPrompt, apiKey);
 
             // Send aspect ratio to frontend so it can show placeholder
             await sendToConnection(connectionId, {
@@ -919,11 +929,43 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
           }
 
           // Update session timestamp
-          await updateSessionMetadata(session, {
+          session = await updateSessionMetadata(session, {
             lastInteractionAt: assistantTimestamp
           });
 
           console.log('Image message saved to DynamoDB successfully');
+
+          // Generate title if this is the first user message
+          if (!session.title) {
+            try {
+              const history = await listMessages(sessionId);
+              const userMessageCount = history.filter(
+                (event) => event.eventType === 'message' && event.role === 'user'
+              ).length;
+
+              if (userMessageCount === 1) {
+                const title = await generateSessionTitle(client, session.model, [
+                  { role: 'user', content: userPrompt },
+                  { role: 'assistant', content: `Generated image: ${userPrompt}` }
+                ]);
+
+                if (title) {
+                  session = await updateSessionMetadata(session, { title });
+                  try {
+                    await sendToConnection(connectionId, {
+                      type: 'session.title',
+                      sessionId,
+                      title
+                    });
+                  } catch (wsError) {
+                    console.warn('Failed to send title via WebSocket, but saved to DB', wsError);
+                  }
+                }
+              }
+            } catch (titleError) {
+              console.error('Failed to generate title for image session', titleError);
+            }
+          }
         } catch (dbError) {
           console.error('CRITICAL: Failed to save image message to DynamoDB', dbError);
         }

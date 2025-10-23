@@ -38,7 +38,7 @@ interface ProviderMutationResponse {
 }
 
 const PROVIDER_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: 'gpt', label: 'GPT' },
+  { value: 'openai', label: 'OpenAI' },
   { value: 'copilot', label: 'Copilot' },
   { value: 'claude', label: 'Claude' },
   { value: 'gemini', label: 'Gemini' }

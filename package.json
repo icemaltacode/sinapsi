@@ -18,6 +18,7 @@
     "@aws-sdk/client-apigatewaymanagementapi": "^3.913.0",
     "@aws-sdk/client-cognito-identity-provider": "^3.913.0",
     "@aws-sdk/client-dynamodb": "^3.913.0",
+    "@aws-sdk/client-lambda": "^3.914.0",
     "@aws-sdk/client-s3": "^3.913.0",
     "@aws-sdk/client-secrets-manager": "^3.913.0",
     "@aws-sdk/client-sns": "^3.913.0",

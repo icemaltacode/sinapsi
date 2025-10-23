@@ -1,6 +1,9 @@
 export interface ChatModelOption {
   id: string;
   label: string;
+  supportsImageGeneration?: boolean | null;
+  supportsTTS?: boolean | null;
+  supportsTranscription?: boolean | null;
 }
 
 export interface ChatProviderOption {

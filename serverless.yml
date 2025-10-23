@@ -132,6 +132,12 @@ provider:
             - execute-api:ManageConnections
           Resource:
             - arn:aws:execute-api:${aws:region}:${aws:accountId}:*/@connections/*
+        - Effect: Allow
+          Action:
+            - lambda:InvokeFunction
+          Resource:
+            - arn:aws:lambda:${aws:region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-scheduledModelRefresh
+            - arn:aws:lambda:${aws:region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-testCapabilities
 
 custom:
   tableName: ${self:service}-table-${self:provider.stage}
@@ -338,6 +344,59 @@ functions:
           method: GET
           path: /admin/usage
           authorizer: cognitoAuth
+
+  adminRefreshModels:
+    handler: src/handlers/admin.refreshModels
+    timeout: 120
+    events:
+      - httpApi:
+          method: POST
+          path: /admin/models/refresh
+          authorizer: cognitoAuth
+
+  adminGetModelsCache:
+    handler: src/handlers/admin.getModelsCache
+    events:
+      - httpApi:
+          method: GET
+          path: /admin/models/cache
+          authorizer: cognitoAuth
+
+  adminBlacklistModel:
+    handler: src/handlers/admin.blacklistModel
+    events:
+      - httpApi:
+          method: POST
+          path: /admin/models/blacklist
+          authorizer: cognitoAuth
+
+  adminAddManualModel:
+    handler: src/handlers/admin.addManualModel
+    events:
+      - httpApi:
+          method: POST
+          path: /admin/models/manual
+          authorizer: cognitoAuth
+
+  adminDeleteManualModel:
+    handler: src/handlers/admin.deleteManualModel
+    events:
+      - httpApi:
+          method: DELETE
+          path: /admin/models/manual
+          authorizer: cognitoAuth
+
+  scheduledModelRefresh:
+    handler: src/handlers/scheduled.refreshModelCache
+    timeout: 300
+    events:
+      - schedule:
+          rate: cron(0 2 * * ? *)
+          enabled: true
+
+  testCapabilities:
+    handler: src/handlers/capabilities.testCapabilities
+    timeout: 300
 
   wsConnect:
     handler: src/handlers/websocket.connect

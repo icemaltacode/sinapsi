@@ -86,6 +86,12 @@ export const keys = {
     sk: `CONN#${connectionId}`,
     gsi1pk: 'WS_CONNECTION',
     gsi1sk: `${TENANT_ID}#${connectionId}`
+  }),
+  modelCache: (provider: string): KeyAttributes => ({
+    pk: join('TENANT'),
+    sk: `MODEL_CACHE#${provider}`,
+    gsi1pk: 'MODEL_CACHE',
+    gsi1sk: `${TENANT_ID}#${provider}`
   })
 };
 
@@ -98,7 +104,8 @@ export type EntityType =
   | 'SESSION_EVENT'
   | 'SESSION_SUMMARY'
   | 'USAGE_MONTHLY'
-  | 'WS_CONNECTION';
+  | 'WS_CONNECTION'
+  | 'MODEL_CACHE';
 
 export interface BaseItem extends KeyAttributes {
   entityType: EntityType;
@@ -210,6 +217,23 @@ export interface WebsocketConnectionItem extends BaseItem {
   userId: string;
   sessionId?: string;
   expiresAt: number;
+}
+
+export interface ModelCacheItem extends BaseItem {
+  entityType: 'MODEL_CACHE';
+  provider: string;
+  models: Array<{
+    id: string;
+    label: string;
+    supportsImageGeneration: boolean | null;
+    supportsTTS?: boolean | null;
+    supportsTranscription?: boolean | null;
+    source: 'curated' | 'manual';
+    blacklisted?: boolean;
+  }>;
+  lastRefreshed: string;
+  refreshSource: 'scheduled' | 'manual';
+  capabilitiesRefreshed?: string;
 }
 
 type BaseAttributes<T extends EntityType> = Omit<BaseItem, 'pk' | 'sk' | 'entityType'> & {

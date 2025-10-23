@@ -7,6 +7,7 @@ import { NewPasswordView } from './routes/new-password-view';
 import { AdminLayout } from './layouts/admin-layout';
 import { AdminUsersPage } from './routes/admin/users-page';
 import { AdminProvidersPage } from './routes/admin/providers-page';
+import { AdminModelsPage } from './routes/admin/models-page';
 import { AccountPage } from './routes/account-page';
 import { AppHeader } from './components/layout/header';
 import { HomeLayout } from './layouts/home-layout';
@@ -100,6 +101,7 @@ export default function App() {
             <Route path='/admin' element={<AdminRoute />}>
               <Route index element={<AdminUsersPage />} />
               <Route path='providers' element={<AdminProvidersPage />} />
+              <Route path='models' element={<AdminModelsPage />} />
             </Route>
             <Route path='/account' element={<AccountRoute />} />
             <Route path='*' element={<Navigate to='/' replace />} />

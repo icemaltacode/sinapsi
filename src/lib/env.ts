@@ -42,5 +42,6 @@ export const DEFAULT_OPENAI_MONTHLY_SPEND_GBP = getNumberEnv(
   'DEFAULT_OPENAI_MONTHLY_SPEND_GBP',
   50
 );
+export const BALDRICK_MODEL = getEnv('BALDRICK_MODEL', 'gpt-4o-mini');
 
 export { getEnv, getNumberEnv };

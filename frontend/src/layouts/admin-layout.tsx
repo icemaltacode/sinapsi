@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, Key, PanelLeftOpen, Users, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Key, Layers, PanelLeftOpen, Users, X } from 'lucide-react';
 
 import { AppHeader } from '../components/layout/header';
 import { cn } from '../lib/utils';
@@ -13,7 +13,8 @@ interface AdminLayoutProps {
 
 const NAV_LINKS = [
   { label: 'Users', to: '/admin', icon: Users },
-  { label: 'Providers', to: '/admin/providers', icon: Key }
+  { label: 'Providers', to: '/admin/providers', icon: Key },
+  { label: 'Models', to: '/admin/models', icon: Layers }
 ];
 
 export function AdminLayout({ children }: AdminLayoutProps) {
