@@ -34,10 +34,13 @@ export const refreshModelCache: ScheduledHandler = async (event) => {
       return;
     }
 
+    const trigger: 'scheduled' | 'manual' =
+      'detail-type' in event ? 'scheduled' : (event as { manual?: boolean })?.manual ? 'manual' : 'scheduled';
+
     // Refresh each provider
     const results = await Promise.all(
       openaiProviders.map(async (provider) => {
-        const result = await refreshModelsForProvider(provider.provider);
+        const result = await refreshModelsForProvider(provider.provider, trigger);
         return {
           providerId: provider.provider,
           ...result
@@ -50,6 +53,14 @@ export const refreshModelCache: ScheduledHandler = async (event) => {
         console.log(`[Scheduled Model Refresh] Raw models for ${result.providerId}: ${result.rawModels.join(', ')}`);
       } else {
         console.log(`[Scheduled Model Refresh] Raw models for ${result.providerId}: (none)`);
+      }
+
+      if (result.regexFilteredModels && result.regexFilteredModels.length > 0) {
+        console.log(
+          `[Scheduled Model Refresh] Regex filtered models for ${result.providerId}: ${result.regexFilteredModels.join(', ')}`
+        );
+      } else {
+        console.log(`[Scheduled Model Refresh] Regex filtered models for ${result.providerId}: (none)`);
       }
 
       if (result.curatedModels && result.curatedModels.length > 0) {
@@ -89,7 +100,6 @@ ${successful.map((s) => `- ${s.providerId}: ${s.modelsCount} models cached`).joi
         `[Scheduled Model Refresh] Total models cached: ${successful.reduce((sum, r) => sum + r.modelsCount, 0)}`
       );
 
-      // Invoke capability checker Lambda asynchronously
       const functionName = `sinapsi-${process.env.STAGE || 'dev'}-testCapabilities`;
       console.log('[Scheduled Model Refresh] Invoking capability checker Lambda');
 

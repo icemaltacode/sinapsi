@@ -63,6 +63,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from '../components/ui/dropdown-menu';
+
+const MAX_FILE_SIZE = 30 * 1024 * 1024; // 30MB
+const MAX_FILES = 5;
 const isFrontendDebugEnabled = (() => {
   const value = import.meta.env.VITE_FRONTEND_DEBUG;
   if (typeof value === 'boolean') {
@@ -733,9 +736,6 @@ export function HomePage() {
       activePollingIntervalsRef.current.delete(sessionId);
     };
   }, [idToken, messagesBySession, updateMessages]);
-
-  const MAX_FILE_SIZE = 30 * 1024 * 1024; // 30MB
-  const MAX_FILES = 5;
 
   const handleFileSelect = useCallback((files: FileList | null) => {
     if (!files || files.length === 0) return;

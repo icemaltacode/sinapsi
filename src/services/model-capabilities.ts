@@ -4,7 +4,12 @@ import path from 'node:path';
 
 import OpenAI from 'openai';
 
-import { getModelCache, saveModelCapabilities, type ModelData } from '../repositories/model-cache';
+import {
+  getModelCache,
+  saveModelCapabilities,
+  updateModelCapabilityEntry,
+  type ModelData
+} from '../repositories/model-cache';
 
 import { getProviderApiKey } from './provider-secrets';
 
@@ -51,7 +56,9 @@ function writeTinySilenceWav(): string {
  */
 async function supportsImageGeneration(client: OpenAI, model: string): Promise<boolean | null> {
   try {
-    await client.responses.create({
+    const requestClient = client.withOptions({ timeout: 60000 });
+
+    await requestClient.responses.create({
       model,
       input: 'Generate a simple image of a red circle on a white background.',
       tools: [{ type: 'image_generation' }]
@@ -59,7 +66,14 @@ async function supportsImageGeneration(client: OpenAI, model: string): Promise<b
     return true;
   } catch (error) {
     // Typical error for unsupported models: "Unsupported tool type: image_generation"
-    console.log(`[Capabilities] Image gen test failed for ${model}:`, error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+
+    if (message.toLowerCase().includes('timed out')) {
+      console.log(`[Capabilities] Image gen test timed out for ${model}:`, message);
+      return null;
+    }
+
+    console.log(`[Capabilities] Image gen test failed for ${model}:`, message);
     return false;
   }
 }
@@ -92,14 +106,16 @@ async function supportsTranscription(client: OpenAI, model: string): Promise<boo
     const fileStream = fs.createReadStream(wavPath);
     await client.audio.transcriptions.create({
       model, // typically "whisper-1" supports this; most chat models do not
-      file: fileStream as any
+      file: fileStream
     });
     return true;
   } catch (error) {
     console.log(`[Capabilities] Transcription test failed for ${model}:`, error instanceof Error ? error.message : String(error));
     return false;
   } finally {
-    fs.existsSync(wavPath) && fs.unlinkSync(wavPath);
+    if (fs.existsSync(wavPath)) {
+      fs.unlinkSync(wavPath);
+    }
   }
 }
 
@@ -211,46 +227,53 @@ export async function testModelCapabilities(providerId: string): Promise<void> {
 
     console.log(`[Capabilities] Testing capabilities for ${cache.models.length} models`);
 
-    const client = new OpenAI({ apiKey, timeout: 30000 });
+    const client = new OpenAI({ apiKey, timeout: 600000 });
+    const updatedModels: ModelData[] = [];
 
-    // Test each model's capabilities in parallel
-    const updatedModels: ModelData[] = await Promise.all(
-      cache.models.map(async (model) => {
-        console.log(`[Capabilities] Testing ${model.id}...`);
+    for (const model of cache.models) {
+      console.log(`[Capabilities] Testing ${model.id}...`);
 
-        // Test all four capabilities in parallel for this model
-        const [img, tts, asr, files] = await Promise.all([
-          supportsImageGeneration(client, model.id).catch((err) => {
-            console.error(`[Capabilities] Image gen error for ${model.id}:`, err);
-            return null;
-          }),
-          supportsTTS(client, model.id).catch((err) => {
-            console.error(`[Capabilities] TTS error for ${model.id}:`, err);
-            return null;
-          }),
-          supportsTranscription(client, model.id).catch((err) => {
-            console.error(`[Capabilities] Transcription error for ${model.id}:`, err);
-            return null;
-          }),
-          supportsFileUpload(client, model.id).catch((err) => {
-            console.error(`[Capabilities] File upload error for ${model.id}:`, err);
-            return null;
-          })
-        ]);
+      const [img, tts, asr, files] = await Promise.all([
+        supportsImageGeneration(client, model.id).catch((err) => {
+          console.error(`[Capabilities] Image gen error for ${model.id}:`, err);
+          return null;
+        }),
+        supportsTTS(client, model.id).catch((err) => {
+          console.error(`[Capabilities] TTS error for ${model.id}:`, err);
+          return null;
+        }),
+        supportsTranscription(client, model.id).catch((err) => {
+          console.error(`[Capabilities] Transcription error for ${model.id}:`, err);
+          return null;
+        }),
+        supportsFileUpload(client, model.id).catch((err) => {
+          console.error(`[Capabilities] File upload error for ${model.id}:`, err);
+          return null;
+        })
+      ]);
 
-        console.log(`[Capabilities] ${model.id}: img=${img}, tts=${tts}, asr=${asr}, files=${files}`);
+      console.log(`[Capabilities] ${model.id}: img=${img}, tts=${tts}, asr=${asr}, files=${files}`);
 
-        return {
-          ...model,
-          supportsImageGeneration: img,
-          supportsTTS: tts,
-          supportsTranscription: asr,
-          supportsFileUpload: files
-        };
-      })
-    );
+      const updatedModel: ModelData = {
+        ...model,
+        supportsImageGeneration: img,
+        supportsTTS: tts,
+        supportsTranscription: asr,
+        supportsFileUpload: files
+      };
 
-    // Save updated capabilities to DynamoDB with capabilitiesRefreshed timestamp
+      updatedModels.push(updatedModel);
+
+      try {
+        await updateModelCapabilityEntry(providerId, updatedModel);
+        console.log(
+          `[Capabilities] Persisted capability update for ${model.id}: img=${img}, tts=${tts}, asr=${asr}, files=${files}`
+        );
+      } catch (updateError) {
+        console.error(`[Capabilities] Failed to persist capability update for ${model.id}:`, updateError);
+      }
+    }
+
     await saveModelCapabilities(providerId, updatedModels);
 
     console.log(`[Capabilities] Updated ${updatedModels.length} models for ${providerId}`);

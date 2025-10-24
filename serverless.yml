@@ -418,7 +418,7 @@ functions:
 
   testCapabilities:
     handler: src/handlers/capabilities.testCapabilities
-    timeout: 300
+    timeout: 600
 
   wsConnect:
     handler: src/handlers/websocket.connect

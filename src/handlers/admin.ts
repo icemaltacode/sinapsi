@@ -14,7 +14,6 @@ import {
   saveProviderConfig
 } from '../repositories/providers';
 import { upsertQuota } from '../repositories/quotas';
-import { refreshModelsForProvider } from '../services/model-refresh';
 import {
   deleteProviderApiKey,
   getProviderApiKey,
@@ -444,7 +443,7 @@ export const refreshModels: APIGatewayProxyHandlerV2 = async () => {
       new InvokeCommand({
         FunctionName: functionName,
         InvocationType: 'Event', // Async invocation - don't wait for response
-        Payload: JSON.stringify({}) // Empty event payload
+        Payload: JSON.stringify({ manual: true }) // Indicate manual trigger
       })
     );
 
@@ -476,7 +475,10 @@ export const getModelsCache: APIGatewayProxyHandlerV2 = async () => {
           providerId: provider.provider,
           providerName: provider.instanceName || provider.provider,
           models: cache?.models || [],
-          lastRefreshed: cache?.lastRefreshed || null
+          lastRefreshed: cache?.lastRefreshed || null,
+          lastRefreshStatus: cache?.lastRefreshStatus ?? null,
+          lastRefreshError: cache?.lastRefreshError ?? null,
+          lastRefreshAttempt: cache?.lastRefreshAttempt ?? null
         };
       })
     );

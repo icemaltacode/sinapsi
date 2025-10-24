@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { Readable } from 'node:stream';
 
 import {
   ApiGatewayManagementApiClient,
@@ -26,6 +27,7 @@ import { getModelCache, isCacheStale, type ModelData } from '../repositories/mod
 import { getProviderConfig, listProviderConfigs } from '../repositories/providers';
 import { deleteConnection as removeConnection, getConnection } from '../repositories/websocket-connections';
 import { getProviderApiKey } from '../services/provider-secrets';
+import type { ResponseCreateParamsNonStreaming } from 'openai/resources/responses/responses';
 
 type ProviderModel = {
   id: string;
@@ -94,14 +96,16 @@ const downloadAndEncodeFile = async (fileKey: string): Promise<string> => {
   });
 
   const response = await s3Client.send(command);
-  if (!response.Body) {
+  const bodyStream = response.Body as Readable | undefined;
+  if (!bodyStream) {
     throw new Error(`Failed to download file: ${fileKey}`);
   }
 
   // Convert stream to buffer
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of response.Body as any) {
-    chunks.push(chunk);
+  const chunks: Buffer[] = [];
+  for await (const chunk of bodyStream as AsyncIterable<Uint8Array | Buffer>) {
+    const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    chunks.push(bufferChunk);
   }
   const buffer = Buffer.concat(chunks);
   return buffer.toString('base64');
@@ -900,7 +904,7 @@ const generateSessionTitle = async (
 
     const response = await client.responses.create({
       model,
-      input: prompt as any // SDK type is complex union, cast for simplicity
+      input: prompt as unknown as ResponseCreateParamsNonStreaming['input']
     });
 
     const title = extractTextFromResponse(response);
@@ -1183,7 +1187,7 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
 
     const stream = client.responses.stream({
       model: session.model,
-      input: inputMessages as any // SDK type is complex union, cast for simplicity
+      input: inputMessages as unknown as ResponseCreateParamsNonStreaming['input']
     });
 
     for await (const eventChunk of stream) {

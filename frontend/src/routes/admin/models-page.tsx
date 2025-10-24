@@ -33,6 +33,9 @@ interface ProviderCache {
   providerName: string;
   models: ModelItem[];
   lastRefreshed: string | null;
+  lastRefreshStatus?: 'ok' | 'error' | null;
+  lastRefreshError?: string | null;
+  lastRefreshAttempt?: string | null;
 }
 
 interface CacheResponse {
@@ -44,15 +47,75 @@ interface RefreshResponse {
   providers: string[];
 }
 
+function collectCapabilityChanges(prev: ProviderCache[], next: ProviderCache[]): string[] {
+  const prevMap = new Map(prev.map((provider) => [provider.providerId, provider]));
+  const changed: string[] = [];
+
+  for (const provider of next) {
+    const prevProvider = prevMap.get(provider.providerId);
+    if (!prevProvider) continue;
+
+    const prevModels = new Map(prevProvider.models.map((model) => [model.id, model]));
+
+    for (const model of provider.models) {
+      const prevModel = prevModels.get(model.id);
+      if (!prevModel) continue;
+
+      const changedCapability =
+        prevModel.supportsImageGeneration !== model.supportsImageGeneration ||
+        prevModel.supportsTTS !== model.supportsTTS ||
+        prevModel.supportsTranscription !== model.supportsTranscription ||
+        prevModel.supportsFileUpload !== model.supportsFileUpload;
+
+      if (changedCapability) {
+        changed.push(`${provider.providerId}:${model.id}`);
+      }
+    }
+  }
+
+  return changed;
+}
+
+function countPendingCapabilities(providers: ProviderCache[]): number {
+  let pending = 0;
+  for (const provider of providers) {
+    for (const model of provider.models) {
+      if (
+        model.supportsImageGeneration == null ||
+        model.supportsTTS == null ||
+        model.supportsTranscription == null ||
+        model.supportsFileUpload == null
+      ) {
+        pending++;
+      }
+    }
+  }
+  return pending;
+}
+
 // Helper function to render capability icon
 function renderCapabilityIcon(value: boolean | null | undefined): React.ReactNode {
+  const baseClass = 'inline-flex h-6 w-6 items-center justify-center rounded-full';
+
   if (value === null || value === undefined) {
-    return <Loader2 className='h-4 w-4 animate-spin text-blue-400' />;
+    return (
+      <span className={`${baseClass} bg-blue-500/10`}>
+        <Loader2 className='h-4 w-4 animate-spin text-blue-400' />
+      </span>
+    );
   }
   if (value === true) {
-    return <Check className='h-4 w-4 text-green-500' />;
+    return (
+      <span className={`${baseClass} bg-emerald-500/10`}>
+        <Check className='h-4 w-4 text-emerald-400' />
+      </span>
+    );
   }
-  return <X className='h-4 w-4 text-muted-foreground' />;
+  return (
+    <span className={`${baseClass} bg-muted/10`}>
+      <X className='h-4 w-4 text-muted-foreground' />
+    </span>
+  );
 }
 
 export function AdminModelsPage() {
@@ -65,6 +128,8 @@ export function AdminModelsPage() {
   const [currentTaskProgress, setCurrentTaskProgress] = useState<number>(0);
   const [overallProgress, setOverallProgress] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
+  const [lastChangedModels, setLastChangedModels] = useState<Set<string>>(new Set());
+  const [capabilityTargetCount, setCapabilityTargetCount] = useState(0);
 
   const fetchCache = useCallback(async () => {
     if (!idToken) return;
@@ -77,7 +142,8 @@ export function AdminModelsPage() {
         token: idToken
       });
 
-      setProviders(response.providers || []);
+      const list = response.providers || [];
+      setProviders(list);
 
       if (response.providers && response.providers.length > 0 && !selectedProvider) {
         setSelectedProvider(response.providers[0].providerId);
@@ -88,6 +154,20 @@ export function AdminModelsPage() {
       setLoading(false);
     }
   }, [idToken, selectedProvider]);
+
+  const applyProvidersUpdate = useCallback((nextProviders: ProviderCache[]) => {
+    setProviders((prev) => {
+      const changes = collectCapabilityChanges(prev, nextProviders);
+      if (changes.length > 0) {
+        setLastChangedModels((prevSet) => {
+          const updated = new Set(prevSet);
+          changes.forEach((key) => updated.add(key));
+          return updated;
+        });
+      }
+      return nextProviders;
+    });
+  }, []);
 
   useEffect(() => {
     void fetchCache();
@@ -101,8 +181,28 @@ export function AdminModelsPage() {
     setCurrentTaskProgress(0);
     setOverallProgress(0);
     setError(null);
+    setCapabilityTargetCount(0);
 
     try {
+      const refreshStartTime = Date.now();
+      let capabilityProcessingTotal = 0;
+
+      const detectRefreshError = (providersList: ProviderCache[]): string | null => {
+        for (const provider of providersList) {
+          if (provider.lastRefreshStatus === 'error') {
+            if (!provider.lastRefreshAttempt) {
+              return provider.lastRefreshError || 'Model refresh failed';
+            }
+
+            const attemptTime = new Date(provider.lastRefreshAttempt).getTime();
+            if (Number.isNaN(attemptTime) || attemptTime >= refreshStartTime) {
+              return provider.lastRefreshError || 'Model refresh failed';
+            }
+          }
+        }
+        return null;
+      };
+
       // ===== PHASE 1: Model Curation =====
       setStatus('Sending refresh request...');
 
@@ -145,6 +245,15 @@ export function AdminModelsPage() {
           token: idToken
         });
 
+        const refreshError = detectRefreshError(cacheResponse.providers || []);
+        if (refreshError) {
+          setStatus(`Error: ${refreshError}`);
+          setError(refreshError);
+          setProviders(cacheResponse.providers || []);
+          setRefreshing(false);
+          return;
+        }
+
         // Check if lastRefreshed timestamp changed
         let timestampChanged = false;
         for (const provider of cacheResponse.providers) {
@@ -153,7 +262,7 @@ export function AdminModelsPage() {
 
           if (newTimestamp && oldTimestamp !== newTimestamp) {
             timestampChanged = true;
-            setProviders(cacheResponse.providers || []);
+            applyProvidersUpdate(cacheResponse.providers || []);
             break;
           }
         }
@@ -162,6 +271,9 @@ export function AdminModelsPage() {
           setCurrentTaskProgress(100);
           setOverallProgress(50);
           setStatus('Models fetched. Testing capabilities...');
+          const pending = countPendingCapabilities(cacheResponse.providers || []);
+          capabilityProcessingTotal = pending;
+          setCapabilityTargetCount(pending);
           phase1Completed = true;
           break;
         }
@@ -177,61 +289,51 @@ export function AdminModelsPage() {
       }
 
       // ===== PHASE 2: Capability Testing =====
-      const maxPollsPhase2 = 30; // 5 minutes
+      const pollIntervalMsPhase2 = 5000;
       pollCount = 0;
-      const phase2StartTime = Date.now();
-      let phase2Completed = false;
-
-      while (pollCount < maxPollsPhase2) {
+      while (true) {
         pollCount++;
-
-        // Update countdown progress bar
-        const elapsed = Date.now() - phase2StartTime;
-        const progress = Math.min((elapsed / phase1TimeoutMs) * 100, 100);
-        setCurrentTaskProgress(progress);
-        // Update overall progress proportionally (50-100% during Phase 2)
-        setOverallProgress(50 + (progress * 0.5));
 
         // Fetch latest cache
         const cacheResponse = await apiRequest<CacheResponse>('/admin/models/cache', {
           token: idToken
         });
 
-        // Check if all capabilities are populated (non-null/undefined)
-        let allCapabilitiesPopulated = true;
-        for (const provider of cacheResponse.providers) {
-          for (const model of provider.models) {
-            if (
-              model.supportsImageGeneration == null ||
-              model.supportsTTS == null ||
-              model.supportsTranscription == null ||
-              model.supportsFileUpload == null
-            ) {
-              allCapabilitiesPopulated = false;
-              break;
-            }
-          }
-          if (!allCapabilitiesPopulated) break;
+        const refreshError = detectRefreshError(cacheResponse.providers || []);
+        if (refreshError) {
+          setStatus(`Error: ${refreshError}`);
+          setError(refreshError);
+          applyProvidersUpdate(cacheResponse.providers || []);
+          setRefreshing(false);
+          return;
         }
 
-        if (allCapabilitiesPopulated) {
+        applyProvidersUpdate(cacheResponse.providers || []);
+
+        const pending = countPendingCapabilities(cacheResponse.providers || []);
+        if (capabilityProcessingTotal === 0) {
+          capabilityProcessingTotal = pending;
+          setCapabilityTargetCount(pending);
+        }
+
+        const total = capabilityProcessingTotal || capabilityTargetCount || pending || 1;
+
+        const completed = Math.max(total - pending, 0);
+
+        const progress = total === 0 ? 100 : Math.min((completed / total) * 100, 100);
+        setCurrentTaskProgress(progress);
+        setOverallProgress(50 + progress * 0.5);
+
+        if (pending === 0) {
           setCurrentTaskProgress(100);
           setOverallProgress(100);
           setStatus('Complete');
-          setProviders(cacheResponse.providers || []);
-          phase2Completed = true;
+          applyProvidersUpdate(cacheResponse.providers || []);
           break;
         }
 
         // Wait before next poll
-        if (pollCount < maxPollsPhase2) {
-          await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-        }
-      }
-
-      if (!phase2Completed) {
-        setStatus('Capability testing timed out (models may have incomplete data)');
-        setError('Capability testing timed out');
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMsPhase2));
       }
     } catch (err) {
       setStatus(`Error: ${err instanceof Error ? err.message : 'Refresh failed'}`);
@@ -240,6 +342,16 @@ export function AdminModelsPage() {
       setRefreshing(false);
     }
   };
+
+  useEffect(() => {
+    if (lastChangedModels.size === 0) return;
+
+    const timeout = setTimeout(() => {
+      setLastChangedModels(new Set());
+    }, 1500);
+
+    return () => clearTimeout(timeout);
+  }, [lastChangedModels]);
 
   const handleToggleBlacklist = async (modelId: string, currentlyBlacklisted: boolean) => {
     if (!idToken || !selectedProvider) return;
@@ -425,11 +537,16 @@ export function AdminModelsPage() {
                 </tr>
               </thead>
               <tbody className='divide-y divide-border/60 text-foreground/90'>
-                {models.map((model) => (
-                  <tr
-                    key={model.id}
-                    className={`transition hover:bg-white/5 ${model.blacklisted ? 'opacity-50' : ''}`}
-                  >
+                {models.map((model) => {
+                  const providerId = currentProvider?.providerId ?? '';
+                  const rowKey = `${providerId}:${model.id}`;
+                  const isHighlighted = lastChangedModels.has(rowKey);
+
+                  return (
+                    <tr
+                      key={model.id}
+                      className={`transition hover:bg-white/5 ${model.blacklisted ? 'opacity-50' : ''} ${isHighlighted ? 'bg-emerald-500/10 ring-1 ring-emerald-400/40 transition-colors' : ''}`}
+                    >
                     <td className='px-3 py-3 font-mono text-xs'>{model.id}</td>
                     <td className='px-3 py-3 font-medium text-white'>
                       {model.label}
@@ -485,8 +602,9 @@ export function AdminModelsPage() {
                         </Button>
                       )}
                     </td>
-                  </tr>
-                ))}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

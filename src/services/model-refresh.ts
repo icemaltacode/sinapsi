@@ -1,7 +1,12 @@
 import OpenAI from 'openai';
 
 import { curateModelList } from '../lib/baldrick';
-import { getModelCache, saveModelCache, type ModelData } from '../repositories/model-cache';
+import {
+  getModelCache,
+  saveModelCache,
+  recordModelRefreshError,
+  type ModelData
+} from '../repositories/model-cache';
 import { getProviderConfig } from '../repositories/providers';
 
 import { getProviderApiKey } from './provider-secrets';
@@ -11,6 +16,7 @@ export interface RefreshResult {
   modelsCount: number;
   error?: string;
   rawModels?: string[];
+  regexFilteredModels?: string[];
   curatedModels?: string[];
 }
 
@@ -18,9 +24,11 @@ export interface RefreshResult {
  * Refresh model cache for a specific provider
  */
 export const refreshModelsForProvider = async (
-  providerId: string
+  providerId: string,
+  trigger: 'scheduled' | 'manual'
 ): Promise<RefreshResult> => {
   let rawModelIds: string[] = [];
+  let regexFilteredModelIds: string[] = [];
   let curatedModelIds: string[] = [];
   try {
     console.log(`[Model Refresh] Starting refresh for provider: ${providerId}`);
@@ -51,19 +59,44 @@ export const refreshModelsForProvider = async (
     console.log(`[Model Refresh] Fetched ${rawModelIds.length} raw models from API`);
     console.log(`[Model Refresh] Raw models: ${rawModelIds.join(', ')}`);
 
+    regexFilteredModelIds = rawModelIds.filter((id) => {
+      const lower = id.toLowerCase();
+      const hasDate = /\d{4}-\d{2}/.test(id);
+      const hasPreview = lower.includes('preview');
+      const isFineTuned = id.includes(':');
+      const isEmbedding = lower.includes('embedding');
+      const isAudio = lower.includes('tts') || lower.includes('audio');
+      const isImageOnly = lower.includes('dall-e') || lower.startsWith('sora');
+      const isModeration = lower.includes('moderation');
+      const isRealtime = lower.includes('realtime');
+
+      if (isFineTuned || isEmbedding || isAudio || isImageOnly || isModeration || isRealtime) {
+        return false;
+      }
+
+      if (hasDate || hasPreview) {
+        return false;
+      }
+
+      return true;
+    });
+
+    if (regexFilteredModelIds.length === 0) {
+      console.warn('[Model Refresh] Regex filter removed all models; falling back to raw list');
+      regexFilteredModelIds = [...rawModelIds];
+    }
+
+    console.log(
+      `[Model Refresh] Regex filtered models (${rawModelIds.length} -> ${regexFilteredModelIds.length}): ${regexFilteredModelIds.join(', ')}`
+    );
+
     // Get existing cache to preserve blacklist and manual models
     const existingCache = await getModelCache(providerId);
 
     // Use Baldrick with GPT-5 to curate the list
-    const curated = await curateModelList(rawModelIds, providerId, apiKey);
+    const curated = await curateModelList(regexFilteredModelIds, providerId, apiKey);
 
     curatedModelIds = curated.map((m) => m.model_name);
-
-    if (curated.length === 0) {
-      const error = 'Curation returned empty list - likely GPT-5 failed or returned invalid JSON';
-      console.error(`[Model Refresh] ${error}`);
-      return { success: false, modelsCount: 0, error, rawModels: rawModelIds, curatedModels: curatedModelIds };
-    }
 
     // Build blacklist lookup from existing cache
     const blacklistMap = new Map<string, boolean>();
@@ -93,7 +126,10 @@ export const refreshModelsForProvider = async (
     console.log(`[Model Refresh] Merging ${curatedModels.length} curated + ${manualModels.length} manual models`);
 
     // Save to DynamoDB
-    await saveModelCache(providerId, mergedModels, 'scheduled');
+    await saveModelCache(providerId, mergedModels, trigger, {
+      status: 'ok',
+      errorMessage: null
+    });
 
     console.log(`[Model Refresh] Successfully cached ${mergedModels.length} total models for ${providerId}`);
     console.log(`[Model Refresh] Curated models:`, curatedModels.map(m => m.id).join(', '));
@@ -102,17 +138,19 @@ export const refreshModelsForProvider = async (
       success: true,
       modelsCount: mergedModels.length,
       rawModels: rawModelIds,
+      regexFilteredModels: regexFilteredModelIds,
       curatedModels: curatedModelIds
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`[Model Refresh] Failed to refresh models for ${providerId}:`, error);
-    return {
-      success: false,
-      modelsCount: 0,
-      error: errorMessage,
-      rawModels: rawModelIds,
-      curatedModels: curatedModelIds
-    };
+
+    try {
+      await recordModelRefreshError(providerId, trigger, errorMessage);
+    } catch (recordError) {
+      console.error(`[Model Refresh] Failed to record refresh error for ${providerId}:`, recordError);
+    }
+
+    throw error instanceof Error ? error : new Error(errorMessage);
   }
 };

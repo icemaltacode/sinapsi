@@ -115,27 +115,31 @@ export const detectImageAspectRatio = async (
 
 /**
  * Curate a list of models from raw API responses
- * Uses GPT-5 via Responses API to filter down to main chat/completion models
+ * Uses GPT-5 Chat via Responses API to filter down to main chat/completion models
  * Does NOT detect capabilities - that happens separately via capability testing
  */
+const createBaldrickClient = (apiKey: string) =>
+  new OpenAI({
+    apiKey,
+    timeout: 45000,
+    maxRetries: 0
+  });
+
 export const curateModelList = async (
   rawModels: string[],
   provider: string,
   apiKey: string
 ): Promise<Array<{ model_name: string; display_name: string }>> => {
-  try {
-    baldrickLog(`Curating ${rawModels.length} models for provider: ${provider}`);
-
-    const prompt = `Given these raw ${provider.toUpperCase()} API model IDs:
+  const prompt = `Given these raw ${provider.toUpperCase()} API model IDs:
 ${JSON.stringify(rawModels, null, 2)}
 
 Filter and curate this list:
-1. REMOVE: Dated/snapshot versions (e.g., gpt-4-0613, gpt-5-2025-08-07)
+1. REMOVE: Dated/snapshot versions (e.g., gpt-4-0613, gpt-5-2025-08-07, gpt-3.5-turbo-1106)
 2. REMOVE: Fine-tuned models (e.g., ft:gpt-3.5-turbo:org-name)
 3. REMOVE: Preview/beta models (e.g., gpt-4-vision-preview). Do NOT treat base 'gpt-5' as preview; only remove IDs that contain '-preview' or date suffixes.
 4. REMOVE: Deprecated models
-5. REMOVE: Specialty/niche models (e.g., text-embedding, whisper, tts, dall-e)
-6. NOTE: If present, always include: gpt-5, gpt-5-mini, gpt-5-pro
+5. REMOVE: (THIS IS VERY IMPORTANT) - Specialty/niche models (e.g., text-embedding, whisper, tts, dall-e, search, codex, code models and so on. Anything not primarily for chat/completion.)
+6. NOTE: If present, always include: gpt-5, gpt-5-mini, gpt-5-pro, gpt-5-chat-latest
 7. NOTE: Choose only from the provided list; do not exclude base families unless they match the removal patterns.
 
 For each REMAINING model, provide:
@@ -144,20 +148,31 @@ For each REMAINING model, provide:
 
 Return ONLY a valid JSON array of objects with these two fields. No markdown, no explanation.`;
 
-    const client = new OpenAI({ apiKey, timeout: 90000 }); // 90s timeout for GPT-5 Responses API
+  try {
+    baldrickLog(`Curating ${rawModels.length} models for provider: ${provider}`);
 
-    // Use GPT-5 via Responses API
-    baldrickLog('Using GPT-5 via Responses API');
+    const client = createBaldrickClient(apiKey);
+
+    // Use GPT-5 Chat via Responses API
+    baldrickLog('Using GPT-5 Chat via Responses API');
     const response = await client.responses.create({
-      model: 'gpt-5',
-      input: prompt
+      model: 'gpt-5-chat-latest',
+      input: prompt,
+      max_output_tokens: 3000,
+      temperature: 0
     });
 
     // Extract text from response output
+    baldrickLog('Raw response payload:', JSON.stringify(response, null, 2));
+
     const answer = response.output_text?.trim() || '';
     baldrickLog(`Raw curation response length: ${answer.length} chars`);
     if (answer.length < 100) {
       baldrickLog(`Raw response content: ${answer}`);
+    }
+
+    if (answer.length === 0) {
+      throw new Error('Empty response from GPT-5 Chat during model curation');
     }
 
     // Parse JSON response
@@ -188,9 +203,79 @@ Return ONLY a valid JSON array of objects with these two fields. No markdown, no
 
     baldrickLog(`Curated ${validated.length} models from ${rawModels.length} raw models`);
 
+    if (validated.length === 0) {
+      throw new Error('Curation returned zero models after filtering');
+    }
+
     return validated;
   } catch (error) {
     baldrickLog('Curation failed:', error);
-    return [];
+
+    // If the failure looks like a timeout/connection issue, retry once with smaller prompt & fallback model
+    if (
+      error instanceof Error &&
+      (error.name === 'APIConnectionTimeoutError' ||
+        /timed out/i.test(error.message ?? '') ||
+        /Timeout/i.test(error.message ?? '') ||
+        /Empty response/i.test(error.message ?? '') ||
+        /zero models/i.test(error.message ?? ''))
+    ) {
+      baldrickLog('Retrying curation with fallback model (gpt-4.1-mini)');
+      try {
+        const fallbackClient = new OpenAI({ apiKey, timeout: 30000, maxRetries: 0 });
+        const response = await fallbackClient.responses.create({
+          model: 'gpt-4.1-mini',
+          input: [
+            {
+              role: 'system',
+              content: 'You are a precise JSON generator. Do not include explanations or reasoning; respond with JSON only.'
+            },
+            {
+              role: 'user',
+              content: prompt
+            }
+          ],
+          max_output_tokens: 1500
+        });
+
+        const answer = response.output_text?.trim() || '';
+        baldrickLog('[Fallback] Raw response payload:', JSON.stringify(response, null, 2));
+        baldrickLog(`[Fallback] Raw curation response length: ${answer.length} chars`);
+
+        const cleaned = answer.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        if (!cleaned) {
+          throw new Error('[Fallback] Empty response');
+        }
+
+        const parsed = JSON.parse(cleaned) as unknown;
+
+        if (!Array.isArray(parsed)) {
+          throw new Error('[Fallback] Response is not an array');
+        }
+
+        const validated = parsed.filter((item): item is { model_name: string; display_name: string } => {
+          return (
+            typeof item === 'object' &&
+            item !== null &&
+            typeof (item as { model_name?: unknown }).model_name === 'string' &&
+            typeof (item as { display_name?: unknown }).display_name === 'string'
+          );
+        });
+
+        baldrickLog(`[Fallback] Curated ${validated.length} models from ${rawModels.length} raw models`);
+
+        if (validated.length === 0) {
+          throw new Error('[Fallback] Curation returned zero models');
+        }
+        return validated;
+      } catch (fallbackError) {
+        baldrickLog('[Fallback] Curation failed:', fallbackError);
+        throw fallbackError instanceof Error
+          ? fallbackError
+          : new Error(String(fallbackError));
+      }
+    }
+
+    throw error instanceof Error ? error : new Error(String(error));
   }
 };

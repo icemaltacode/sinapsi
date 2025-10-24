@@ -243,6 +243,9 @@ export interface ModelCacheItem extends BaseItem {
   lastRefreshed: string;
   refreshSource: 'scheduled' | 'manual';
   capabilitiesRefreshed?: string;
+  lastRefreshStatus?: 'ok' | 'error';
+  lastRefreshAttempt?: string;
+  lastRefreshError?: string | null;
 }
 
 type BaseAttributes<T extends EntityType> = Omit<BaseItem, 'pk' | 'sk' | 'entityType'> & {
