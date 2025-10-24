@@ -9,7 +9,7 @@ import type { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import OpenAI from 'openai';
 
 import { getUserId } from '../lib/auth';
-import { detectImageAspectRatio } from '../lib/baldrick';
+import { askBaldrickToClassify, detectImageAspectRatio } from '../lib/baldrick';
 import type { SessionEventItem, SessionSummaryItem } from '../lib/dynamo';
 import { badRequest, ok, serverError } from '../lib/response';
 import { generatePresignedPutUrl, generatePresignedGetUrl, deleteFilesFromS3 } from '../lib/s3-helpers';
@@ -22,7 +22,7 @@ import {
   saveMessage,
   updateSessionMetadata
 } from '../repositories/chat-sessions';
-import { getModelCache, isCacheStale } from '../repositories/model-cache';
+import { getModelCache, isCacheStale, type ModelData } from '../repositories/model-cache';
 import { getProviderConfig, listProviderConfigs } from '../repositories/providers';
 import { deleteConnection as removeConnection, getConnection } from '../repositories/websocket-connections';
 import { getProviderApiKey } from '../services/provider-secrets';
@@ -33,6 +33,7 @@ type ProviderModel = {
   supportsImageGeneration?: boolean | null;
   supportsTTS?: boolean | null;
   supportsTranscription?: boolean | null;
+  supportsFileUpload?: boolean | null;
 };
 
 type ProviderEntry = {
@@ -257,14 +258,15 @@ const listModelsForProvider = async (
       console.log(`[Model Cache] Using cached models from DynamoDB for ${providerId} (${dbCache.models.length} models)`);
 
       // Filter out blacklisted models
-      const models: ProviderModel[] = dbCache.models
+      const models: ProviderModel[] = (dbCache.models as ModelData[])
         .filter((m) => !m.blacklisted)
         .map((m) => ({
           id: m.id,
           label: m.label,
           supportsImageGeneration: m.supportsImageGeneration,
           supportsTTS: m.supportsTTS,
-          supportsTranscription: m.supportsTranscription
+          supportsTranscription: m.supportsTranscription,
+          supportsFileUpload: m.supportsFileUpload ?? null
         }));
 
       // Update in-memory cache
@@ -315,8 +317,22 @@ const sendToConnection = async (connectionId: string, payload: unknown) => {
   }
 };
 
-const detectImageGenerationIntent = (message: string): boolean => {
+const detectImageGenerationIntent = async (
+  message: string,
+  attachments: Array<{
+    fileKey: string;
+    fileName: string;
+    fileType: string;
+    fileSize: number;
+  }> | undefined,
+  apiKey: string
+): Promise<boolean> => {
   const lowerMessage = message.toLowerCase();
+
+  // If the user attached files, assume they want analysis of uploads, not new image generation
+  if (attachments && attachments.length > 0) {
+    return false;
+  }
 
   // Image-related keywords
   const imageTerms = ['image', 'picture', 'photo', 'illustration', 'drawing', 'artwork', 'graphic'];
@@ -335,7 +351,27 @@ const detectImageGenerationIntent = (message: string): boolean => {
 
   const hasPattern = patterns.some((pattern) => pattern.test(message));
 
-  return (hasImageTerm && hasActionTerm) || hasPattern;
+  const likelyImagePrompt = (hasImageTerm && hasActionTerm) || hasPattern;
+
+  if (!likelyImagePrompt) {
+    return false;
+  }
+
+  try {
+    const answer = await askBaldrickToClassify(
+      `A user wrote: "${message}".
+Determine if they are asking the assistant to GENERATE a new image (answer "yes") or do something else such as describing, editing, or analysing an existing image (answer "no").
+Reply with just yes or no.`,
+      apiKey,
+      ['yes', 'no'] as const,
+      'no'
+    );
+
+    return answer === 'yes';
+  } catch (error) {
+    console.warn('Baldrick image intent classification failed, falling back to heuristic', error);
+    return likelyImagePrompt;
+  }
 };
 
 const supportsNativeImageGeneration = (model: string): boolean => {
@@ -971,7 +1007,7 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     // Check if this is an image generation request
-    if (detectImageGenerationIntent(payload.message.trim())) {
+    if (await detectImageGenerationIntent(payload.message.trim(), payload.attachments, apiKey)) {
       const assistantMessageId = randomUUID();
       const userPrompt = payload.message.trim();
 

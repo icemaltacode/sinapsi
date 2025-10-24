@@ -5,12 +5,19 @@ import {
   useRef,
   useState
 } from 'react';
+import type { LucideIcon } from 'lucide-react';
 import {
   ArrowDown,
   ArrowUp,
+  AudioLines,
+  Download,
+  FileUp,
   History,
+  Image as ImageIcon,
   Loader2,
   MessageCircleMore,
+  Maximize2,
+  Mic,
   Paperclip,
   Pin,
   PinOff,
@@ -114,6 +121,7 @@ export function HomePage() {
   const [systemPromptValue, setSystemPromptValue] = useState('');
   const [pendingFiles, setPendingFiles] = useState<PendingFileUpload[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [expandedImage, setExpandedImage] = useState<{ url: string; prompt?: string | null } | null>(null);
 
   const socketRef = useRef<WebSocket | null>(null);
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
@@ -567,6 +575,13 @@ export function HomePage() {
     [sessions, activeSessionId]
   );
 
+  const activeModel = useMemo(() => {
+    if (!activeSession) return null;
+    const provider = providers.find((item) => item.providerId === activeSession.providerId);
+    if (!provider) return null;
+    return provider.models.find((model) => model.id === activeSession.model) ?? null;
+  }, [activeSession, providers]);
+
   const currentMessages = useMemo(
     () => (activeSessionId ? messagesBySession[activeSessionId] ?? [] : []),
     [activeSessionId, messagesBySession]
@@ -581,6 +596,24 @@ export function HomePage() {
     stats.total = stats.sent + stats.received;
     return stats;
   }, [currentMessages]);
+
+  const activeModelCapabilities = useMemo(() => {
+    if (!activeModel) {
+      return [] as Array<{
+        key: string;
+        label: string;
+        value: boolean | null | undefined;
+        Icon: LucideIcon;
+      }>;
+    }
+
+    return [
+      { key: 'files', label: 'File uploads', value: activeModel.supportsFileUpload, Icon: FileUp },
+      { key: 'image', label: 'Image generation', value: activeModel.supportsImageGeneration, Icon: ImageIcon },
+      { key: 'tts', label: 'Text-to-Speech', value: activeModel.supportsTTS, Icon: AudioLines },
+      { key: 'transcription', label: 'Transcription', value: activeModel.supportsTranscription, Icon: Mic }
+    ];
+  }, [activeModel]);
 
   // Load existing system message when opening the panel
   useEffect(() => {
@@ -1032,7 +1065,7 @@ export function HomePage() {
             </div>
           )}
           {message.imageUrl && (
-            <div className='mt-3 relative'>
+            <div className='mt-3 relative group'>
               <div className='overflow-hidden rounded-lg border border-border/30'>
                 <img
                   src={message.imageUrl}
@@ -1041,6 +1074,28 @@ export function HomePage() {
                   loading='lazy'
                 />
               </div>
+              {!message.imageGenerating && (
+                <div className='absolute right-2 top-2 flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100'>
+                  <button
+                    type='button'
+                    className='flex h-8 w-8 items-center justify-center rounded-full border border-border/30 bg-background/90 text-foreground shadow-sm transition hover:bg-background'
+                    onClick={() => setExpandedImage({ url: message.imageUrl!, prompt: message.imagePrompt })}
+                    aria-label='View image full screen'
+                  >
+                    <Maximize2 className='h-4 w-4' />
+                  </button>
+                  <a
+                    href={message.imageUrl}
+                    download={`${message.messageId}.png`}
+                    className='flex h-8 w-8 items-center justify-center rounded-full border border-border/30 bg-background/90 text-foreground shadow-sm transition hover:bg-background'
+                    aria-label='Download image'
+                    target='_blank'
+                    rel='noopener noreferrer'
+                  >
+                    <Download className='h-4 w-4' />
+                  </a>
+                </div>
+              )}
               {/* Show shimmer overlay while generating (for partials) */}
               {message.imageGenerating && (
                 <div className='absolute inset-0 rounded-lg overflow-hidden pointer-events-none'>
@@ -1342,6 +1397,30 @@ export function HomePage() {
                       <p className='text-xs uppercase tracking-wide'>
                         {activeSession.providerInstanceName} • {activeSession.model}
                       </p>
+                      {activeModelCapabilities.length > 0 ? (
+                        <div className='mt-1 flex items-center gap-2 text-xs text-muted-foreground'>
+                          {activeModelCapabilities.map(({ key, label, value, Icon }) => (
+                            <span
+                              key={key}
+                              className='flex h-5 w-5 items-center justify-center rounded-full border border-border/20 bg-background/40'
+                              title={label}
+                              role='img'
+                              aria-label={`${label}: ${value === null || value === undefined ? 'checking' : value ? 'available' : 'unavailable'}`}
+                            >
+                              {value === null || value === undefined ? (
+                                <Loader2 className='h-3.5 w-3.5 animate-spin text-blue-400' />
+                              ) : (
+                                <Icon
+                                  className={cn(
+                                    'h-3.5 w-3.5',
+                                    value ? 'text-emerald-400' : 'text-muted-foreground/40'
+                                  )}
+                                />
+                              )}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                     <div className='flex items-center gap-3'>
                       <div className='text-right text-xs uppercase tracking-wide text-muted-foreground/80'>
@@ -1579,6 +1658,65 @@ export function HomePage() {
           </div>
         </div>
       </section>
+
+      {expandedImage ? (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) {
+              setExpandedImage(null);
+            }
+          }}
+        >
+          <DialogContent className='max-w-[90vw] overflow-hidden p-0 sm:max-w-[80vw] md:max-w-[70vw]'>
+            <div className='flex items-center justify-between border-b border-border/20 bg-background/90 px-4 py-3'>
+              <div className='min-w-0 text-sm font-medium text-foreground'>
+                {expandedImage.prompt ? (
+                  <span className='line-clamp-2'>{expandedImage.prompt}</span>
+                ) : (
+                  'Generated image'
+                )}
+              </div>
+              <div className='flex items-center gap-2'>
+                <Button
+                  type='button'
+                  size='icon'
+                  variant='ghost'
+                  className='h-8 w-8 rounded-full border border-border/40 text-muted-foreground transition hover:text-foreground'
+                  asChild
+                >
+                  <a
+                    href={expandedImage.url}
+                    download='generated-image.png'
+                    target='_blank'
+                    rel='noopener noreferrer'
+                    aria-label='Download image'
+                  >
+                    <Download className='h-4 w-4' />
+                  </a>
+                </Button>
+                <Button
+                  type='button'
+                  size='icon'
+                  variant='ghost'
+                  className='h-8 w-8 rounded-full border border-border/40 text-muted-foreground transition hover:text-foreground'
+                  onClick={() => setExpandedImage(null)}
+                  aria-label='Close image'
+                >
+                  <X className='h-4 w-4' />
+                </Button>
+              </div>
+            </div>
+            <div className='flex max-h-[80vh] items-center justify-center bg-black/90 p-4'>
+              <img
+                src={expandedImage.url}
+                alt={expandedImage.prompt || 'Generated image'}
+                className='max-h-[75vh] w-auto max-w-full rounded-lg shadow-2xl'
+              />
+            </div>
+          </DialogContent>
+        </Dialog>
+      ) : null}
 
       {isFrontendDebugEnabled ? <TokenDebugPanel /> : null}
 
