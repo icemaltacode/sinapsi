@@ -53,10 +53,11 @@ export function ModelSelector({ models, selectedModelId, onModelChange, disabled
             <table className='w-full table-fixed'>
               <thead className='sticky top-0 bg-background'>
                 <tr className='border-b text-left text-xs text-muted-foreground'>
-                  <th className='w-[40%] p-3 font-medium'>Model</th>
-                  <th className='w-[20%] p-3 text-center font-medium'>Image</th>
-                  <th className='w-[20%] p-3 text-center font-medium'>TTS</th>
-                  <th className='w-[20%] p-3 text-center font-medium'>Transcribe</th>
+                  <th className='w-[35%] p-3 font-medium'>Model</th>
+                  <th className='w-[16%] p-3 text-center font-medium'>Image</th>
+                  <th className='w-[16%] p-3 text-center font-medium'>TTS</th>
+                  <th className='w-[16%] p-3 text-center font-medium'>Trans</th>
+                  <th className='w-[17%] p-3 text-center font-medium'>Files</th>
                 </tr>
               </thead>
               <tbody>
@@ -85,6 +86,11 @@ export function ModelSelector({ models, selectedModelId, onModelChange, disabled
                         <CapabilityIcon value={model.supportsTranscription} title='Transcription' />
                       </div>
                     </td>
+                    <td className='p-3 text-center'>
+                      <div className='flex justify-center'>
+                        <CapabilityIcon value={model.supportsFileUpload} title='File Upload' />
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -104,7 +110,7 @@ export function ModelSelector({ models, selectedModelId, onModelChange, disabled
                 }}
               >
                 <div className='mb-2 truncate font-medium'>{model.label}</div>
-                <div className='grid grid-cols-3 gap-1 text-xs text-muted-foreground'>
+                <div className='grid grid-cols-4 gap-1 text-xs text-muted-foreground'>
                   <div className='flex items-center gap-1'>
                     <CapabilityIcon value={model.supportsImageGeneration} />
                     <span className='truncate'>Image</span>
@@ -116,6 +122,10 @@ export function ModelSelector({ models, selectedModelId, onModelChange, disabled
                   <div className='flex items-center gap-1'>
                     <CapabilityIcon value={model.supportsTranscription} />
                     <span className='truncate'>Trans</span>
+                  </div>
+                  <div className='flex items-center gap-1'>
+                    <CapabilityIcon value={model.supportsFileUpload} />
+                    <span className='truncate'>Files</span>
                   </div>
                 </div>
               </button>

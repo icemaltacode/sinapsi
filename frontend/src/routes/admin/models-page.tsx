@@ -23,6 +23,7 @@ interface ModelItem {
   supportsImageGeneration: boolean | null;
   supportsTTS?: boolean | null;
   supportsTranscription?: boolean | null;
+  supportsFileUpload?: boolean | null;
   source: 'curated' | 'manual';
   blacklisted?: boolean;
 }
@@ -121,9 +122,10 @@ export function AdminModelsPage() {
       });
 
       // Poll Phase 1: Wait for lastRefreshed to change
-      const maxPollsPhase1 = 18; // 3 minutes
+      const maxPollsPhase1 = 30; // 5 minutes
       const pollIntervalMs = 10000; // 10 seconds
       let pollCount = 0;
+      let phase1Completed = false;
 
       const startTime = Date.now();
       const phase1TimeoutMs = maxPollsPhase1 * pollIntervalMs;
@@ -160,6 +162,7 @@ export function AdminModelsPage() {
           setCurrentTaskProgress(100);
           setOverallProgress(50);
           setStatus('Models fetched. Testing capabilities...');
+          phase1Completed = true;
           break;
         }
 
@@ -169,14 +172,15 @@ export function AdminModelsPage() {
         }
       }
 
-      if (pollCount >= maxPollsPhase1) {
+      if (!phase1Completed) {
         throw new Error('Model refresh timed out');
       }
 
       // ===== PHASE 2: Capability Testing =====
-      const maxPollsPhase2 = 18; // 3 minutes
+      const maxPollsPhase2 = 30; // 5 minutes
       pollCount = 0;
       const phase2StartTime = Date.now();
+      let phase2Completed = false;
 
       while (pollCount < maxPollsPhase2) {
         pollCount++;
@@ -193,14 +197,15 @@ export function AdminModelsPage() {
           token: idToken
         });
 
-        // Check if all capabilities are populated (non-null)
+        // Check if all capabilities are populated (non-null/undefined)
         let allCapabilitiesPopulated = true;
         for (const provider of cacheResponse.providers) {
           for (const model of provider.models) {
             if (
-              model.supportsImageGeneration === null ||
-              model.supportsTTS === null ||
-              model.supportsTranscription === null
+              model.supportsImageGeneration == null ||
+              model.supportsTTS == null ||
+              model.supportsTranscription == null ||
+              model.supportsFileUpload == null
             ) {
               allCapabilitiesPopulated = false;
               break;
@@ -214,6 +219,7 @@ export function AdminModelsPage() {
           setOverallProgress(100);
           setStatus('Complete');
           setProviders(cacheResponse.providers || []);
+          phase2Completed = true;
           break;
         }
 
@@ -223,7 +229,7 @@ export function AdminModelsPage() {
         }
       }
 
-      if (pollCount >= maxPollsPhase2) {
+      if (!phase2Completed) {
         setStatus('Capability testing timed out (models may have incomplete data)');
         setError('Capability testing timed out');
       }
@@ -414,6 +420,7 @@ export function AdminModelsPage() {
                   <th className='px-3 py-3 text-center font-medium'>Image</th>
                   <th className='px-3 py-3 text-center font-medium'>TTS</th>
                   <th className='px-3 py-3 text-center font-medium'>Transcribe</th>
+                  <th className='px-3 py-3 text-center font-medium'>Files</th>
                   <th className='px-3 py-3 font-medium'>Action</th>
                 </tr>
               </thead>
@@ -449,6 +456,9 @@ export function AdminModelsPage() {
                     </td>
                     <td className='px-3 py-3 text-center'>
                       {renderCapabilityIcon(model.supportsTranscription)}
+                    </td>
+                    <td className='px-3 py-3 text-center'>
+                      {renderCapabilityIcon(model.supportsFileUpload)}
                     </td>
                     <td className='px-3 py-3'>
                       {model.source === 'curated' ? (
@@ -498,6 +508,7 @@ function AddManualModelDialog({
   const [modelId, setModelId] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [imageGen, setImageGen] = useState(false);
+  const [fileUpload, setFileUpload] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -518,7 +529,8 @@ function AddManualModelDialog({
             provider,
             modelId: modelId.trim(),
             displayName: displayName.trim(),
-            supportsImageGeneration: imageGen
+            supportsImageGeneration: imageGen,
+            supportsFileUpload: fileUpload
           }
         }
       );
@@ -531,6 +543,7 @@ function AddManualModelDialog({
       setModelId('');
       setDisplayName('');
       setImageGen(false);
+      setFileUpload(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add model');
     } finally {
@@ -584,6 +597,18 @@ function AddManualModelDialog({
             />
             <Label htmlFor='imageGen' className='cursor-pointer'>
               Supports Image Generation
+            </Label>
+          </div>
+          <div className='flex items-center space-x-2'>
+            <input
+              type='checkbox'
+              id='fileUpload'
+              checked={fileUpload}
+              onChange={(e) => setFileUpload(e.target.checked)}
+              className='h-4 w-4 rounded border-gray-300'
+            />
+            <Label htmlFor='fileUpload' className='cursor-pointer'>
+              Supports File Upload
             </Label>
           </div>
 

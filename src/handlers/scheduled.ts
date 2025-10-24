@@ -45,6 +45,20 @@ export const refreshModelCache: ScheduledHandler = async (event) => {
       })
     );
 
+    for (const result of results) {
+      if (result.rawModels && result.rawModels.length > 0) {
+        console.log(`[Scheduled Model Refresh] Raw models for ${result.providerId}: ${result.rawModels.join(', ')}`);
+      } else {
+        console.log(`[Scheduled Model Refresh] Raw models for ${result.providerId}: (none)`);
+      }
+
+      if (result.curatedModels && result.curatedModels.length > 0) {
+        console.log(`[Scheduled Model Refresh] Curated models for ${result.providerId}: ${result.curatedModels.join(', ')}`);
+      } else {
+        console.log(`[Scheduled Model Refresh] Curated models for ${result.providerId}: (none)`);
+      }
+    }
+
     // Collect statistics
     const successful = results.filter((r) => r.success);
     const failed = results.filter((r) => !r.success);

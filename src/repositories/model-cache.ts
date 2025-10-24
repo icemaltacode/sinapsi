@@ -14,6 +14,7 @@ export interface ModelData {
   supportsImageGeneration: boolean | null;
   supportsTTS?: boolean | null;
   supportsTranscription?: boolean | null;
+  supportsFileUpload?: boolean | null;
   source: 'curated' | 'manual';
   blacklisted?: boolean;
 }

@@ -11,8 +11,10 @@ import {
   History,
   Loader2,
   MessageCircleMore,
+  Paperclip,
   Pin,
   PinOff,
+  Plus,
   Send,
   Settings,
   Sparkles,
@@ -32,9 +34,11 @@ import {
   createSession,
   deleteSession as deleteSessionRequest,
   fetchProviders,
+  getPresignedUploadUrl,
   getSession,
   listSessions,
-  sendMessage
+  sendMessage,
+  uploadFileToS3
 } from '../lib/chat-api';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import type {
@@ -44,6 +48,14 @@ import type {
 } from '../types/chat';
 import { Button } from '../components/ui/button';
 import { AnimatedImagePlaceholder } from '../components/AnimatedImagePlaceholder';
+import { FileUploadPreview, type PendingFileUpload } from '../components/FileUploadPreview';
+import { MessageAttachments } from '../components/MessageAttachments';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from '../components/ui/dropdown-menu';
 const isFrontendDebugEnabled = (() => {
   const value = import.meta.env.VITE_FRONTEND_DEBUG;
   if (typeof value === 'boolean') {
@@ -100,10 +112,13 @@ export function HomePage() {
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [systemPromptOpen, setSystemPromptOpen] = useState(false);
   const [systemPromptValue, setSystemPromptValue] = useState('');
+  const [pendingFiles, setPendingFiles] = useState<PendingFileUpload[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
 
   const socketRef = useRef<WebSocket | null>(null);
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
   const prevSessionIdRef = useRef<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const loadedSessionsRef = useRef(new Set<string>());
   const activePollingIntervalsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
@@ -686,6 +701,134 @@ export function HomePage() {
     };
   }, [idToken, messagesBySession, updateMessages]);
 
+  const MAX_FILE_SIZE = 30 * 1024 * 1024; // 30MB
+  const MAX_FILES = 5;
+
+  const handleFileSelect = useCallback((files: FileList | null) => {
+    if (!files || files.length === 0) return;
+
+    const newFiles: PendingFileUpload[] = [];
+
+    for (let i = 0; i < Math.min(files.length, MAX_FILES - pendingFiles.length); i++) {
+      const file = files[i];
+
+      // Validate file size
+      if (file.size > MAX_FILE_SIZE) {
+        alert(`File "${file.name}" exceeds maximum size of 30MB`);
+        continue;
+      }
+
+      // Create preview URL for images
+      let previewUrl: string | undefined;
+      if (file.type.startsWith('image/')) {
+        previewUrl = URL.createObjectURL(file);
+      }
+
+      newFiles.push({
+        file,
+        uploadProgress: 0,
+        previewUrl
+      });
+    }
+
+    if (pendingFiles.length + newFiles.length > MAX_FILES) {
+      alert(`Maximum ${MAX_FILES} files allowed per message`);
+    }
+
+    setPendingFiles((prev) => [...prev, ...newFiles]);
+  }, [pendingFiles.length]);
+
+  const handleFileUpload = useCallback(async (sessionId: string): Promise<Array<{ fileKey: string; fileName: string; fileType: string; fileSize: number }> | null> => {
+    if (!idToken || pendingFiles.length === 0) return [];
+
+    const uploadedFiles: Array<{ fileKey: string; fileName: string; fileType: string; fileSize: number }> = [];
+
+    try {
+      for (let i = 0; i < pendingFiles.length; i++) {
+        const pendingFile = pendingFiles[i];
+
+        // Update progress to show upload starting
+        setPendingFiles((prev) => {
+          const updated = [...prev];
+          updated[i] = { ...updated[i], uploadProgress: 5 };
+          return updated;
+        });
+
+        // Get presigned URL
+        const { uploadUrl, fileKey } = await getPresignedUploadUrl(idToken, sessionId, {
+          fileName: pendingFile.file.name,
+          fileType: pendingFile.file.type,
+          fileSize: pendingFile.file.size
+        });
+
+        // Update with file key
+        setPendingFiles((prev) => {
+          const updated = [...prev];
+          updated[i] = { ...updated[i], fileKey, uploadProgress: 10 };
+          return updated;
+        });
+
+        // Upload to S3
+        await uploadFileToS3(uploadUrl, pendingFile.file);
+
+        // Update progress to complete
+        setPendingFiles((prev) => {
+          const updated = [...prev];
+          updated[i] = { ...updated[i], uploadProgress: 100 };
+          return updated;
+        });
+
+        uploadedFiles.push({
+          fileKey,
+          fileName: pendingFile.file.name,
+          fileType: pendingFile.file.type,
+          fileSize: pendingFile.file.size
+        });
+      }
+
+      return uploadedFiles;
+    } catch (error) {
+      console.error('File upload failed', error);
+      alert('Failed to upload files. Please try again.');
+      return null;
+    }
+  }, [idToken, pendingFiles]);
+
+  const removeFile = useCallback((index: number) => {
+    setPendingFiles((prev) => {
+      const updated = [...prev];
+      // Clean up preview URL if it exists
+      if (updated[index].previewUrl) {
+        URL.revokeObjectURL(updated[index].previewUrl!);
+      }
+      updated.splice(index, 1);
+      return updated;
+    });
+  }, []);
+
+  const handleDragOver = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragging(false);
+  }, []);
+
+  const handleDrop = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragging(false);
+
+    if (!activeSession) return;
+
+    const files = event.dataTransfer.files;
+    handleFileSelect(files);
+  }, [activeSession, handleFileSelect]);
+
   const handleSendMessage = useCallback(async () => {
     if (!idToken || !connectionId || !composerValue.trim()) {
       return;
@@ -713,23 +856,37 @@ export function HomePage() {
       }
 
       const sessionId = targetSession.sessionId;
+
+      // Upload files if any
+      const uploadedFiles = await handleFileUpload(sessionId);
+      if (uploadedFiles === null) {
+        // Upload failed, don't send message
+        return;
+      }
+
       const userMessage: ChatMessage = {
         messageId: `local-${Date.now()}`,
         role: 'user',
         content: composerValue.trim(),
+        attachments: uploadedFiles.length > 0 ? uploadedFiles.map(f => ({
+          ...f,
+          uploadedAt: new Date().toISOString()
+        })) : undefined,
         createdAt: new Date().toISOString(),
         createdBy: 'me'
       };
       const messageContent = userMessage.content;
       updateMessages(sessionId, (messages) => [...messages, userMessage]);
       setComposerValue('');
+      setPendingFiles([]); // Clear pending files after adding to message
 
       const isImageRequest = detectImageGenerationIntent(messageContent);
 
       try {
         await sendMessage(idToken, sessionId, {
           message: messageContent,
-          connectionId
+          connectionId,
+          attachments: uploadedFiles.length > 0 ? uploadedFiles : undefined
         });
       } catch (error) {
         // For image generation requests, a 503 timeout is expected (>30s generation time)
@@ -758,6 +915,7 @@ export function HomePage() {
     connectionId,
     composerValue,
     detectImageGenerationIntent,
+    handleFileUpload,
     idToken,
     messagesBySession,
     pollForMessages,
@@ -861,6 +1019,12 @@ export function HomePage() {
           >
             {message.content}
           </ReactMarkdown>
+          {/* File attachments */}
+          {message.attachments && message.attachments.length > 0 && (
+            <div className='mt-3'>
+              <MessageAttachments attachments={message.attachments} />
+            </div>
+          )}
           {/* Image generation states */}
           {message.imageGenerating && message.imageAspectRatio && !message.imageUrl && (
             <div className='mt-3'>
@@ -1149,8 +1313,21 @@ export function HomePage() {
           >
             <div
               id='chat-panel'
-              className='flex h-full w-full flex-col rounded-2xl border border-border/40 bg-background/40'
+              className='relative flex h-full w-full flex-col rounded-2xl border border-border/40 bg-background/40'
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
             >
+              {/* Drag overlay */}
+              {isDragging && (
+                <div className='absolute inset-0 z-50 flex items-center justify-center rounded-2xl border-4 border-dashed border-primary bg-background/90 backdrop-blur-sm'>
+                  <div className='flex flex-col items-center gap-3'>
+                    <Paperclip className='h-12 w-12 text-primary' />
+                    <p className='text-lg font-semibold text-foreground'>Drop files here</p>
+                    <p className='text-sm text-muted-foreground'>Up to 5 files, 30MB each</p>
+                  </div>
+                </div>
+              )}
               {/* Header - fixed at top */}
               <div
                 id='chat-panel-header'
@@ -1320,36 +1497,83 @@ export function HomePage() {
               {/* Composer - fixed at bottom */}
               <div
                 id='chat-composer'
-                className='flex flex-shrink-0 items-end gap-2 border-t border-border/30 bg-background/70 p-4'
+                className='flex flex-shrink-0 flex-col gap-2 border-t border-border/30 bg-background/70 p-4'
               >
-                <textarea
-                  rows={2}
-                  value={composerValue}
-                  onChange={(event) => setComposerValue(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' && !event.shiftKey) {
-                      event.preventDefault();
-                      void handleSendMessage();
+                {/* File preview */}
+                {pendingFiles.length > 0 && (
+                  <FileUploadPreview
+                    files={pendingFiles}
+                    onRemove={removeFile}
+                  />
+                )}
+
+                {/* Input row */}
+                <div className='flex items-end gap-2'>
+                  {/* Plus button with dropdown */}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type='button'
+                        size='icon'
+                        variant='ghost'
+                        className='h-10 w-10 flex-shrink-0 rounded-full border border-border/40'
+                        disabled={!activeSession || sending}
+                        aria-label='More options'
+                      >
+                        <Plus className='h-5 w-5' />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align='start'>
+                      <DropdownMenuItem
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={pendingFiles.length >= MAX_FILES}
+                      >
+                        <Paperclip className='mr-2 h-4 w-4' />
+                        Upload file
+                        {pendingFiles.length >= MAX_FILES && ' (Max reached)'}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+
+                  {/* Hidden file input */}
+                  <input
+                    ref={fileInputRef}
+                    type='file'
+                    multiple
+                    accept='*/*'
+                    onChange={(e) => handleFileSelect(e.target.files)}
+                    className='hidden'
+                  />
+
+                  <textarea
+                    rows={2}
+                    value={composerValue}
+                    onChange={(event) => setComposerValue(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && !event.shiftKey) {
+                        event.preventDefault();
+                        void handleSendMessage();
+                      }
+                    }}
+                    placeholder={
+                      activeSession
+                        ? 'Type your message… (Enter to send, Shift+Enter for new line)'
+                        : 'Start a new chat or select a conversation to begin messaging.'
                     }
-                  }}
-                  placeholder={
-                    activeSession
-                      ? 'Type your message… (Enter to send, Shift+Enter for new line)'
-                      : 'Start a new chat or select a conversation to begin messaging.'
-                  }
-                  className='flex-1 resize-none rounded-lg border border-border/30 bg-background/60 px-3 py-2 text-sm text-foreground shadow-inner focus-visible:outline-none focus-visible:ring focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50'
-                  disabled={!activeSession || sending}
-                />
-                <Button
-                  type='button'
-                  size='icon'
-                  className='h-16 w-16 flex-shrink-0 bg-[#EC5763] text-white shadow-md transition hover:bg-[#f47180]'
-                  onClick={handleSendMessage}
-                  disabled={!activeSession || sending || !composerValue.trim() || !connectionId}
-                  aria-label='Send message'
-                >
-                  {sending ? <Loader2 className='h-5 w-5 animate-spin' /> : <Send className='h-5 w-5' />}
-                </Button>
+                    className='flex-1 resize-none rounded-lg border border-border/30 bg-background/60 px-3 py-2 text-sm text-foreground shadow-inner focus-visible:outline-none focus-visible:ring focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50'
+                    disabled={!activeSession || sending}
+                  />
+                  <Button
+                    type='button'
+                    size='icon'
+                    className='h-16 w-16 flex-shrink-0 bg-[#EC5763] text-white shadow-md transition hover:bg-[#f47180]'
+                    onClick={handleSendMessage}
+                    disabled={!activeSession || sending || !composerValue.trim() || !connectionId || (pendingFiles.length > 0 && pendingFiles.some(f => f.uploadProgress < 100 && f.uploadProgress > 0))}
+                    aria-label='Send message'
+                  >
+                    {sending ? <Loader2 className='h-5 w-5 animate-spin' /> : <Send className='h-5 w-5' />}
+                  </Button>
+                </div>
               </div>
             </div>
           </div>

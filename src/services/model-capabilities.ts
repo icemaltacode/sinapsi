@@ -72,8 +72,7 @@ async function supportsTTS(client: OpenAI, model: string): Promise<boolean | nul
     const res = await client.audio.speech.create({
       model, // e.g., "gpt-4o-mini-tts" supports TTS; most chat models do not
       voice: 'alloy',
-      input: 'Hello from the capability checker.',
-      format: 'wav'
+      input: 'Hello from the capability checker.'
     });
     // Accessing the bytes forces the API call to complete
     await res.arrayBuffer();
@@ -101,6 +100,92 @@ async function supportsTranscription(client: OpenAI, model: string): Promise<boo
     return false;
   } finally {
     fs.existsSync(wavPath) && fs.unlinkSync(wavPath);
+  }
+}
+
+/**
+ * Test if a model supports file uploads (vision/multimodal)
+ */
+async function supportsFileUpload(client: OpenAI, model: string): Promise<boolean | null> {
+  const getErrorMessage = (error: unknown): string => {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    if (error && typeof error === 'object' && 'message' in error && typeof (error as { message: unknown }).message === 'string') {
+      return (error as { message: string }).message;
+    }
+    return String(error);
+  };
+
+  const shouldRetryWithResponses = (error: unknown): boolean => {
+    const message = getErrorMessage(error).toLowerCase();
+    return (
+      message.includes('only supported in v1/responses') ||
+      message.includes('not supported in v1/chat/completions') ||
+      message.includes('use \'max_completion_tokens\'')
+    );
+  };
+
+  const tiny1x1RedPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==';
+
+  try {
+    await client.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: 'What color is this pixel?'
+            },
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:image/png;base64,${tiny1x1RedPng}`
+              }
+            }
+          ]
+        }
+      ],
+      max_tokens: 10
+    });
+    return true;
+  } catch (error) {
+    if (!shouldRetryWithResponses(error)) {
+      console.log(`[Capabilities] File upload test failed for ${model}:`, getErrorMessage(error));
+      return false;
+    }
+
+    try {
+      const maxOutputTokens = 64;
+
+      await client.responses.create({
+        model,
+        input: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: 'What color is this pixel?'
+              },
+              {
+                type: 'input_image',
+                image_url: `data:image/png;base64,${tiny1x1RedPng}`,
+                detail: 'low'
+              }
+            ]
+          }
+        ],
+        max_output_tokens: maxOutputTokens
+      });
+
+      return true;
+    } catch (responsesError) {
+      console.log(`[Capabilities] File upload test failed for ${model}:`, getErrorMessage(responsesError));
+      return false;
+    }
   }
 }
 
@@ -133,8 +218,8 @@ export async function testModelCapabilities(providerId: string): Promise<void> {
       cache.models.map(async (model) => {
         console.log(`[Capabilities] Testing ${model.id}...`);
 
-        // Test all three capabilities in parallel for this model
-        const [img, tts, asr] = await Promise.all([
+        // Test all four capabilities in parallel for this model
+        const [img, tts, asr, files] = await Promise.all([
           supportsImageGeneration(client, model.id).catch((err) => {
             console.error(`[Capabilities] Image gen error for ${model.id}:`, err);
             return null;
@@ -146,16 +231,21 @@ export async function testModelCapabilities(providerId: string): Promise<void> {
           supportsTranscription(client, model.id).catch((err) => {
             console.error(`[Capabilities] Transcription error for ${model.id}:`, err);
             return null;
+          }),
+          supportsFileUpload(client, model.id).catch((err) => {
+            console.error(`[Capabilities] File upload error for ${model.id}:`, err);
+            return null;
           })
         ]);
 
-        console.log(`[Capabilities] ${model.id}: img=${img}, tts=${tts}, asr=${asr}`);
+        console.log(`[Capabilities] ${model.id}: img=${img}, tts=${tts}, asr=${asr}, files=${files}`);
 
         return {
           ...model,
           supportsImageGeneration: img,
           supportsTTS: tts,
-          supportsTranscription: asr
+          supportsTranscription: asr,
+          supportsFileUpload: files
         };
       })
     );

@@ -4,7 +4,7 @@ import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand
 } from '@aws-sdk/client-apigatewaymanagementapi';
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import type { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import OpenAI from 'openai';
 
@@ -12,6 +12,7 @@ import { getUserId } from '../lib/auth';
 import { detectImageAspectRatio } from '../lib/baldrick';
 import type { SessionEventItem, SessionSummaryItem } from '../lib/dynamo';
 import { badRequest, ok, serverError } from '../lib/response';
+import { generatePresignedPutUrl, generatePresignedGetUrl, deleteFilesFromS3 } from '../lib/s3-helpers';
 import {
   createSession,
   deleteSession as removeSession,
@@ -41,13 +42,34 @@ type ProviderEntry = {
   models: ProviderModel[];
 };
 
-type ResponseMessageInput = {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
+// OpenAI Responses API types (matching SDK)
+type ResponseInputText = {
+  type: 'input_text';
+  text: string;
+};
+
+type ResponseInputImage = {
+  type: 'input_image';
+  image_url: string;
+  detail?: 'low' | 'high' | 'auto';
+};
+
+type ResponseInputFile = {
+  type: 'input_file';
+  filename: string;
+  file_data: string; // Format: "data:application/pdf;base64,{base64string}"
+};
+
+type ResponseInputContent = ResponseInputText | ResponseInputImage | ResponseInputFile;
+
+type EasyInputMessage = {
+  role: 'user' | 'assistant' | 'system' | 'developer';
+  content: string | ResponseInputContent[];
 };
 
 const WEBSOCKET_MANAGEMENT_URL = process.env.WEBSOCKET_MANAGEMENT_URL;
 const GENERATED_IMAGES_BUCKET = process.env.GENERATED_IMAGES_BUCKET;
+const USER_UPLOADS_BUCKET = process.env.USER_UPLOADS_BUCKET;
 
 if (!WEBSOCKET_MANAGEMENT_URL) {
   throw new Error('WEBSOCKET_MANAGEMENT_URL is not configured');
@@ -62,6 +84,27 @@ const wsClient = new ApiGatewayManagementApiClient({
 });
 
 const s3Client = new S3Client({});
+
+// Helper to download file from S3 and convert to base64
+const downloadAndEncodeFile = async (fileKey: string): Promise<string> => {
+  const command = new GetObjectCommand({
+    Bucket: USER_UPLOADS_BUCKET,
+    Key: fileKey
+  });
+
+  const response = await s3Client.send(command);
+  if (!response.Body) {
+    throw new Error(`Failed to download file: ${fileKey}`);
+  }
+
+  // Convert stream to buffer
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of response.Body as any) {
+    chunks.push(chunk);
+  }
+  const buffer = Buffer.concat(chunks);
+  return buffer.toString('base64');
+};
 
 const modelCache = new Map<string, { expiresAt: number; models: ProviderModel[] }>();
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -479,13 +522,74 @@ const generateImageNative = async (
   }
 };
 
-const mapEventsToInput = (events: SessionEventItem[]): ResponseMessageInput[] =>
-  events
-    .filter((event) => event.eventType === 'message')
-    .map((event) => ({
+const mapEventsToInput = async (events: SessionEventItem[]): Promise<EasyInputMessage[]> => {
+  const messages: EasyInputMessage[] = [];
+
+  for (const event of events) {
+    if (event.eventType !== 'message') continue;
+
+    // If no attachments, just use simple text content
+    if (!event.attachments || event.attachments.length === 0) {
+      messages.push({
+        role: event.role,
+        content: event.content
+      });
+      continue;
+    }
+
+    // Build multimodal content array
+    const contentParts: ResponseInputContent[] = [];
+
+    // Add text first if present
+    if (event.content && event.content.trim()) {
+      contentParts.push({
+        type: 'input_text',
+        text: event.content
+      });
+    }
+
+    // Add attachments
+    for (const attachment of event.attachments) {
+      // Determine content type based on MIME type
+      const isImage = attachment.fileType.startsWith('image/');
+      const isPdf = attachment.fileType === 'application/pdf';
+
+      if (isImage) {
+        // Images: use presigned URL
+        const presignedUrl = await generatePresignedGetUrl(attachment.fileKey, 3600); // 1 hour for OpenAI processing
+        contentParts.push({
+          type: 'input_image',
+          image_url: presignedUrl,
+          detail: 'auto'
+        });
+      } else if (isPdf) {
+        // PDFs: download and base64 encode
+        try {
+          const base64Data = await downloadAndEncodeFile(attachment.fileKey);
+          contentParts.push({
+            type: 'input_file',
+            filename: attachment.fileName,
+            file_data: `data:application/pdf;base64,${base64Data}`
+          });
+        } catch (error) {
+          console.error(`Failed to encode PDF ${attachment.fileName}:`, error);
+          // Skip this attachment if encoding fails
+        }
+      } else {
+        // For other file types, we can't send them to OpenAI
+        // Just skip or log - frontend should handle this validation
+        console.warn(`Unsupported file type for OpenAI: ${attachment.fileType} (${attachment.fileName})`);
+      }
+    }
+
+    messages.push({
       role: event.role,
-      content: event.content
-    }));
+      content: contentParts
+    });
+  }
+
+  return messages;
+};
 
 const toSessionSummaryResponse = (session: SessionSummaryItem) => ({
   sessionId: session.sessionId,
@@ -507,6 +611,7 @@ const toChatMessageResponse = (message: SessionEventItem) => ({
   content: message.content,
   imageUrl: message.imageUrl,
   imagePrompt: message.imagePrompt,
+  attachments: message.attachments,
   createdAt: message.createdAt,
   provider: message.provider,
   createdBy: message.createdBy,
@@ -745,10 +850,10 @@ export const sessionsUpdate: APIGatewayProxyHandlerV2 = async (event) => {
 const generateSessionTitle = async (
   client: OpenAI,
   model: string,
-  history: ResponseMessageInput[]
+  history: EasyInputMessage[]
 ): Promise<string | undefined> => {
   try {
-    const prompt: ResponseMessageInput[] = [
+    const prompt: EasyInputMessage[] = [
       {
         role: 'system',
         content:
@@ -759,7 +864,7 @@ const generateSessionTitle = async (
 
     const response = await client.responses.create({
       model,
-      input: prompt
+      input: prompt as any // SDK type is complex union, cast for simplicity
     });
 
     const title = extractTextFromResponse(response);
@@ -785,6 +890,12 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
     message?: string;
     connectionId?: string;
     role?: 'user' | 'system';
+    attachments?: Array<{
+      fileKey: string;
+      fileName: string;
+      fileType: string;
+      fileSize: number;
+    }>;
   };
 
   if (!payload.message || !payload.message.trim()) {
@@ -822,12 +933,27 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
     const now = new Date();
     const userMessageId = randomUUID();
 
+    // Validate attachment ownership if provided
+    if (payload.attachments && payload.attachments.length > 0) {
+      for (const attachment of payload.attachments) {
+        // File key format: chat/ice-campus/{userId}/{sessionId}/{fileId}-{fileName}
+        const pathParts = attachment.fileKey.split('/');
+        if (pathParts.length < 4 || pathParts[2] !== userId || pathParts[3] !== sessionId) {
+          return badRequest(`Access denied: Attachment ${attachment.fileName} does not belong to this session`);
+        }
+      }
+    }
+
     await saveMessage({
       sessionId,
       isoTimestamp: now.toISOString(),
       messageId: userMessageId,
       role: messageRole,
       content: payload.message.trim(),
+      attachments: payload.attachments?.map(att => ({
+        ...att,
+        uploadedAt: now.toISOString()
+      })),
       provider: providerKey,
       createdBy: userId
     });
@@ -1002,7 +1128,7 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     const history = await listMessages(sessionId);
-    const inputMessages = mapEventsToInput(history);
+    const inputMessages = await mapEventsToInput(history);
     const userMessageCount = history.filter(
       (event) => event.eventType === 'message' && event.role === 'user'
     ).length;
@@ -1021,7 +1147,7 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
 
     const stream = client.responses.stream({
       model: session.model,
-      input: inputMessages
+      input: inputMessages as any // SDK type is complex union, cast for simplicity
     });
 
     for await (const eventChunk of stream) {
@@ -1124,11 +1250,114 @@ export const sessionsDelete: APIGatewayProxyHandlerV2 = async (event) => {
       return badRequest('Session not found');
     }
 
+    // Get all messages to find attached files
+    const messages = await listMessages(sessionId);
+    const fileKeys: string[] = [];
+
+    for (const message of messages) {
+      if (message.attachments && Array.isArray(message.attachments)) {
+        fileKeys.push(...message.attachments.map((att: { fileKey: string }) => att.fileKey));
+      }
+    }
+
+    // Delete files from S3
+    if (fileKeys.length > 0) {
+      try {
+        await deleteFilesFromS3(fileKeys);
+        console.log(`Deleted ${fileKeys.length} files from S3 for session ${sessionId}`);
+      } catch (s3Error) {
+        console.error('Failed to delete files from S3', s3Error);
+        // Continue with session deletion even if file deletion fails
+      }
+    }
+
     await removeSession(session);
 
     return ok({ success: true });
   } catch (error) {
     console.error('chat.sessionsDelete error', error);
+    return serverError(error);
+  }
+};
+
+export const fileUploadPresign: APIGatewayProxyHandlerV2 = async (event) => {
+  try {
+    const sessionId = event.pathParameters?.sessionId;
+    if (!sessionId) {
+      return badRequest('sessionId is required');
+    }
+
+    if (!event.body) {
+      return badRequest('Request body is required');
+    }
+
+    const userId = getUserId(event.requestContext);
+    const session = await getSession(userId, sessionId);
+
+    if (!session) {
+      return badRequest('Session not found');
+    }
+
+    const payload = JSON.parse(event.body) as {
+      fileName?: string;
+      fileType?: string;
+      fileSize?: number;
+    };
+
+    if (!payload.fileName || !payload.fileType || !payload.fileSize) {
+      return badRequest('fileName, fileType, and fileSize are required');
+    }
+
+    // Validate file size (30MB max)
+    const MAX_FILE_SIZE = 30 * 1024 * 1024;
+    if (payload.fileSize > MAX_FILE_SIZE) {
+      return badRequest(`File size exceeds maximum allowed size of ${MAX_FILE_SIZE} bytes`);
+    }
+
+    // Generate S3 key: chat/{tenantId}/{userId}/{sessionId}/{uuid}-{fileName}
+    const fileId = randomUUID();
+    const sanitizedFileName = payload.fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const fileKey = `chat/ice-campus/${userId}/${sessionId}/${fileId}-${sanitizedFileName}`;
+
+    // Generate presigned PUT URL (15 minutes expiry)
+    const uploadUrl = await generatePresignedPutUrl(fileKey, payload.fileType, 900);
+
+    return ok({
+      uploadUrl,
+      fileKey,
+      expiresAt: new Date(Date.now() + 900 * 1000).toISOString()
+    });
+  } catch (error) {
+    console.error('chat.fileUploadPresign error', error);
+    return serverError(error);
+  }
+};
+
+export const fileGet: APIGatewayProxyHandlerV2 = async (event) => {
+  try {
+    const fileKey = event.pathParameters?.fileKey;
+    if (!fileKey) {
+      return badRequest('fileKey is required');
+    }
+
+    const userId = getUserId(event.requestContext);
+
+    // Validate that the file belongs to this user
+    // File key format: chat/ice-campus/{userId}/{sessionId}/{fileId}-{fileName}
+    const pathParts = fileKey.split('/');
+    if (pathParts.length < 4 || pathParts[2] !== userId) {
+      return badRequest('Access denied: File does not belong to this user');
+    }
+
+    // Generate presigned GET URL (7 days expiry)
+    const getUrl = await generatePresignedGetUrl(fileKey, 7 * 24 * 60 * 60);
+
+    return ok({
+      url: getUrl,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+    });
+  } catch (error) {
+    console.error('chat.fileGet error', error);
     return serverError(error);
   }
 };

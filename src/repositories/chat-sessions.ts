@@ -31,6 +31,7 @@ export interface SaveMessageInput {
   content: string;
   imageUrl?: string;
   imagePrompt?: string;
+  attachments?: SessionEventItem['attachments'];
   provider?: string;
   tokensIn?: number;
   tokensOut?: number;
@@ -182,6 +183,7 @@ export const saveMessage = async (input: SaveMessageInput): Promise<SessionEvent
     content: input.content,
     imageUrl: input.imageUrl,
     imagePrompt: input.imagePrompt,
+    attachments: input.attachments,
     provider: input.provider,
     tokensIn: input.tokensIn,
     tokensOut: input.tokensOut,

@@ -63,6 +63,7 @@ provider:
     DEFAULT_OPENAI_MONTHLY_SPEND_GBP: ${env:DEFAULT_OPENAI_MONTHLY_SPEND_GBP, '50'}
     AVATAR_BUCKET: { Ref: AvatarBucket }
     GENERATED_IMAGES_BUCKET: { Ref: GeneratedImagesBucket }
+    USER_UPLOADS_BUCKET: { Ref: UserUploadsBucket }
     WEBSOCKET_URL:
       Fn::Join:
         - ''
@@ -124,9 +125,14 @@ provider:
           Action:
             - s3:PutObject
             - s3:PutObjectAcl
+            - s3:GetObject
+            - s3:DeleteObject
+            - s3:ListBucket
           Resource:
             - Fn::Sub: arn:aws:s3:::${AvatarBucket}/*
             - Fn::Sub: arn:aws:s3:::${GeneratedImagesBucket}/*
+            - Fn::Sub: arn:aws:s3:::${UserUploadsBucket}/*
+            - Fn::Sub: arn:aws:s3:::${UserUploadsBucket}
         - Effect: Allow
           Action:
             - execute-api:ManageConnections
@@ -223,6 +229,22 @@ functions:
       - httpApi:
           method: DELETE
           path: /chat/sessions/{sessionId}
+          authorizer: cognitoAuth
+
+  chatFileUploadPresign:
+    handler: src/handlers/chat.fileUploadPresign
+    events:
+      - httpApi:
+          method: POST
+          path: /chat/sessions/{sessionId}/upload/presign
+          authorizer: cognitoAuth
+
+  chatFileGet:
+    handler: src/handlers/chat.fileGet
+    events:
+      - httpApi:
+          method: GET
+          path: /chat/files/{fileKey+}
           authorizer: cognitoAuth
 
   promptsList:
@@ -602,3 +624,34 @@ resources:
               Status: Enabled
               Prefix: partials/
               ExpirationInDays: 1
+    UserUploadsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:service}-user-uploads-${self:provider.stage}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders:
+                - '*'
+              AllowedMethods:
+                - PUT
+                - GET
+              AllowedOrigins:
+                - http://localhost:5173
+                - https://localhost:5173
+                - https://sinapsi.studio
+              MaxAge: 300
+        LifecycleConfiguration:
+          Rules:
+            - Id: TransitionChatFiles
+              Status: Enabled
+              Prefix: chat/
+              Transitions:
+                - TransitionInDays: 30
+                  StorageClass: STANDARD_IA
+                - TransitionInDays: 60
+                  StorageClass: GLACIER_IR

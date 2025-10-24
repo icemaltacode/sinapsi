@@ -171,6 +171,14 @@ export interface QuotaItem extends BaseItem {
   usageMonth: string;
 }
 
+export interface FileAttachment {
+  fileKey: string;
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  uploadedAt: string;
+}
+
 export interface SessionEventItem extends BaseItem {
   entityType: 'SESSION_EVENT';
   sessionId: string;
@@ -180,6 +188,7 @@ export interface SessionEventItem extends BaseItem {
   content: string;
   imageUrl?: string;
   imagePrompt?: string;
+  attachments?: FileAttachment[];
   provider?: string;
   tokensIn?: number;
   tokensOut?: number;

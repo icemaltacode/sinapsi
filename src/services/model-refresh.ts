@@ -10,6 +10,8 @@ export interface RefreshResult {
   success: boolean;
   modelsCount: number;
   error?: string;
+  rawModels?: string[];
+  curatedModels?: string[];
 }
 
 /**
@@ -18,6 +20,8 @@ export interface RefreshResult {
 export const refreshModelsForProvider = async (
   providerId: string
 ): Promise<RefreshResult> => {
+  let rawModelIds: string[] = [];
+  let curatedModelIds: string[] = [];
   try {
     console.log(`[Model Refresh] Starting refresh for provider: ${providerId}`);
 
@@ -42,9 +46,10 @@ export const refreshModelsForProvider = async (
     console.log(`[Model Refresh] Fetching models from OpenAI API`);
     const client = new OpenAI({ apiKey, timeout: 30000 });
     const response = await client.models.list();
-    const rawModelIds = response.data.map((model) => model.id);
+    rawModelIds = response.data.map((model) => model.id);
 
     console.log(`[Model Refresh] Fetched ${rawModelIds.length} raw models from API`);
+    console.log(`[Model Refresh] Raw models: ${rawModelIds.join(', ')}`);
 
     // Get existing cache to preserve blacklist and manual models
     const existingCache = await getModelCache(providerId);
@@ -52,10 +57,12 @@ export const refreshModelsForProvider = async (
     // Use Baldrick with GPT-5 to curate the list
     const curated = await curateModelList(rawModelIds, providerId, apiKey);
 
+    curatedModelIds = curated.map((m) => m.model_name);
+
     if (curated.length === 0) {
       const error = 'Curation returned empty list - likely GPT-5 failed or returned invalid JSON';
       console.error(`[Model Refresh] ${error}`);
-      return { success: false, modelsCount: 0, error };
+      return { success: false, modelsCount: 0, error, rawModels: rawModelIds, curatedModels: curatedModelIds };
     }
 
     // Build blacklist lookup from existing cache
@@ -72,6 +79,7 @@ export const refreshModelsForProvider = async (
       supportsImageGeneration: null,
       supportsTTS: null,
       supportsTranscription: null,
+      supportsFileUpload: null,
       source: 'curated' as const,
       blacklisted: blacklistMap.get(m.model_name) || false
     }));
@@ -90,10 +98,21 @@ export const refreshModelsForProvider = async (
     console.log(`[Model Refresh] Successfully cached ${mergedModels.length} total models for ${providerId}`);
     console.log(`[Model Refresh] Curated models:`, curatedModels.map(m => m.id).join(', '));
 
-    return { success: true, modelsCount: mergedModels.length };
+    return {
+      success: true,
+      modelsCount: mergedModels.length,
+      rawModels: rawModelIds,
+      curatedModels: curatedModelIds
+    };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`[Model Refresh] Failed to refresh models for ${providerId}:`, error);
-    return { success: false, modelsCount: 0, error: errorMessage };
+    return {
+      success: false,
+      modelsCount: 0,
+      error: errorMessage,
+      rawModels: rawModelIds,
+      curatedModels: curatedModelIds
+    };
   }
 };

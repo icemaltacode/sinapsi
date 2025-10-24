@@ -132,10 +132,11 @@ ${JSON.stringify(rawModels, null, 2)}
 Filter and curate this list:
 1. REMOVE: Dated/snapshot versions (e.g., gpt-4-0613, gpt-5-2025-08-07)
 2. REMOVE: Fine-tuned models (e.g., ft:gpt-3.5-turbo:org-name)
-3. REMOVE: Preview/beta models (e.g., gpt-4-vision-preview)
+3. REMOVE: Preview/beta models (e.g., gpt-4-vision-preview). Do NOT treat base 'gpt-5' as preview; only remove IDs that contain '-preview' or date suffixes.
 4. REMOVE: Deprecated models
 5. REMOVE: Specialty/niche models (e.g., text-embedding, whisper, tts, dall-e)
-6. KEEP ONLY: Main chat/completion models officially supported by ${provider.toUpperCase()}
+6. NOTE: If present, always include: gpt-5, gpt-5-mini, gpt-5-pro
+7. NOTE: Choose only from the provided list; do not exclude base families unless they match the removal patterns.
 
 For each REMAINING model, provide:
 - "model_name": Exact model ID for API use (e.g., "gpt-5", "gpt-4o")

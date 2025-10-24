@@ -4,6 +4,7 @@ export interface ChatModelOption {
   supportsImageGeneration?: boolean | null;
   supportsTTS?: boolean | null;
   supportsTranscription?: boolean | null;
+  supportsFileUpload?: boolean | null;
 }
 
 export interface ChatProviderOption {
@@ -27,6 +28,14 @@ export interface ChatSessionSummary {
   liveConnectionId?: string | null;
 }
 
+export interface FileAttachment {
+  fileKey: string;
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  uploadedAt: string;
+}
+
 export interface ChatMessage {
   messageId: string;
   role: 'user' | 'assistant' | 'system';
@@ -36,6 +45,7 @@ export interface ChatMessage {
   imageAspectRatio?: 'portrait' | 'landscape' | 'square';
   imageGenerating?: boolean;  // True while waiting for final image
   partialCount?: number;       // Track which partial (1, 2, 3)
+  attachments?: FileAttachment[];
   createdAt: string;
   provider?: string;
   createdBy: string;

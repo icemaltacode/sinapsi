@@ -63,7 +63,17 @@ export const updateSession = async (
 export const sendMessage = async (
   token: string,
   sessionId: string,
-  payload: { message: string; connectionId?: string; role?: 'user' | 'system' }
+  payload: {
+    message: string;
+    connectionId?: string;
+    role?: 'user' | 'system';
+    attachments?: Array<{
+      fileKey: string;
+      fileName: string;
+      fileType: string;
+      fileSize: number;
+    }>;
+  }
 ): Promise<{ sessionId: string; userMessageId: string; assistantMessageId?: string }> => {
   return apiRequest<{ sessionId: string; userMessageId: string; assistantMessageId?: string }>(
     `/chat/sessions/${sessionId}/messages`,
@@ -73,6 +83,35 @@ export const sendMessage = async (
       body: payload
     }
   );
+};
+
+export const getPresignedUploadUrl = async (
+  token: string,
+  sessionId: string,
+  file: { fileName: string; fileType: string; fileSize: number }
+): Promise<{ uploadUrl: string; fileKey: string; expiresAt: string }> => {
+  return apiRequest<{ uploadUrl: string; fileKey: string; expiresAt: string }>(
+    `/chat/sessions/${sessionId}/upload/presign`,
+    {
+      method: 'POST',
+      token,
+      body: file
+    }
+  );
+};
+
+export const uploadFileToS3 = async (uploadUrl: string, file: File): Promise<void> => {
+  const response = await fetch(uploadUrl, {
+    method: 'PUT',
+    body: file,
+    headers: {
+      'Content-Type': file.type
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to upload file: ${response.statusText}`);
+  }
 };
 
 export const deleteSession = async (token: string, sessionId: string): Promise<void> => {
