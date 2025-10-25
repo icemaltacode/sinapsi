@@ -490,8 +490,9 @@ export function AdminProvidersPage() {
             <p>Add your first provider to unlock chat integrations.</p>
           </div>
         ) : (
-          <div className='overflow-x-auto'>
-            <table className='min-w-full divide-y divide-border/60 text-left text-sm'>
+          <>
+            <div className='hidden overflow-x-auto md:block'>
+              <table className='min-w-full divide-y divide-border/60 text-left text-sm'>
               <thead className='bg-white/5 text-xs uppercase tracking-wide text-muted-foreground/80'>
                 <tr>
                   <th className='px-3 py-3 font-medium'>Provider</th>
@@ -569,7 +570,77 @@ export function AdminProvidersPage() {
                 })}
               </tbody>
             </table>
-          </div>
+            </div>
+
+            <div className='space-y-3 md:hidden'>
+              {items.map((provider) => {
+                const isRevealed = revealed[provider.providerId];
+                return (
+                  <div
+                    key={provider.providerId}
+                    className='rounded-2xl border border-border/40 bg-background/80 p-4 shadow-sm backdrop-blur'
+                  >
+                    <div className='flex items-start justify-between gap-3'>
+                      <div>
+                        <p className='text-sm font-semibold text-white'>
+                          {PROVIDER_OPTIONS.find((option) => option.value === provider.providerType)?.label ??
+                            provider.providerType}
+                        </p>
+                        <p className='text-xs text-muted-foreground'>
+                          {providersByType.get(provider.providerType) ?? 0} instance
+                          {(providersByType.get(provider.providerType) ?? 0) === 1 ? '' : 's'}
+                        </p>
+                      </div>
+                      <div className='flex items-center gap-2'>
+                        <Button
+                          variant='ghost'
+                          size='icon'
+                          className='h-8 w-8 rounded-full border border-border/30 text-muted-foreground transition hover:text-foreground'
+                          onClick={() => handleToggleReveal(provider.providerId)}
+                        >
+                          {isRevealed ? <EyeOff className='h-4 w-4' /> : <Eye className='h-4 w-4' />}
+                          <span className='sr-only'>Toggle key visibility</span>
+                        </Button>
+                        <Button
+                          variant='ghost'
+                          size='icon'
+                          className='h-8 w-8 rounded-full border border-border/30 text-muted-foreground transition hover:text-foreground'
+                          onClick={() => handleCopy(provider)}
+                          disabled={!provider.apiKey}
+                        >
+                          <Clipboard className='h-4 w-4' />
+                          <span className='sr-only'>Copy key</span>
+                        </Button>
+                        <EditProviderDialog provider={provider} onUpdated={onUpdated} />
+                        <DeleteProviderDialog provider={provider} onDeleted={onDeleted} />
+                      </div>
+                    </div>
+
+                    <div className='mt-3 space-y-2 text-sm text-muted-foreground'>
+                      <div>
+                        <span className='font-medium text-white'>{provider.instanceName}</span>
+                        <p className='text-xs text-muted-foreground'>ID: {provider.providerId}</p>
+                      </div>
+                      <div>
+                        <p className='font-mono text-xs break-all'>
+                          {isRevealed ? provider.apiKey : maskKey(provider.apiKey)}
+                        </p>
+                        {copiedId === provider.providerId ? (
+                          <span className='text-xs text-emerald-300'>Copied!</span>
+                        ) : null}
+                      </div>
+                      <p className='text-xs text-muted-foreground'>
+                        Last rotated:{' '}
+                        {provider.lastRotatedAt
+                          ? new Date(provider.lastRotatedAt).toLocaleString()
+                          : 'n/a'}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
         )}
       </section>
     </div>

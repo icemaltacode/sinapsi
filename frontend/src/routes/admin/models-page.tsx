@@ -16,6 +16,7 @@ import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { useAuth } from '../../context/auth-context';
 import { apiRequest } from '../../lib/api';
+import { cn } from '../../lib/utils';
 
 interface ModelItem {
   id: string;
@@ -522,7 +523,8 @@ export function AdminModelsPage() {
             <p>Try refreshing to populate the cache.</p>
           </div>
         ) : (
-          <div className='overflow-x-auto'>
+          <>
+            <div className='hidden overflow-x-auto md:block'>
             <table className='min-w-full divide-y divide-border/60 text-left text-sm'>
               <thead className='bg-white/5 text-xs uppercase tracking-wide text-muted-foreground/80'>
                 <tr>
@@ -607,7 +609,86 @@ export function AdminModelsPage() {
                 })}
               </tbody>
             </table>
-          </div>
+            </div>
+
+            <div className='space-y-3 md:hidden'>
+              {models.map((model) => {
+                const providerId = currentProvider?.providerId ?? '';
+                const rowKey = `${providerId}:${model.id}`;
+                const isHighlighted = lastChangedModels.has(rowKey);
+                return (
+                  <div
+                    key={model.id}
+                    className={cn(
+                      'rounded-2xl border border-border/40 bg-background/80 p-4 shadow-sm backdrop-blur transition-colors',
+                      isHighlighted && 'bg-emerald-500/10 ring-1 ring-emerald-400/40'
+                    )}
+                  >
+                    <div className='flex items-start justify-between gap-3'>
+                      <div className='min-w-0'>
+                        <p className='text-sm font-semibold text-white truncate'>{model.label}</p>
+                        <p className='font-mono text-xs text-muted-foreground break-all'>{model.id}</p>
+                        <span
+                          className={cn(
+                            'mt-2 inline-flex items-center rounded-full px-2 py-0.5 text-[0.65rem]',
+                            model.source === 'curated'
+                              ? 'bg-blue-500/20 text-blue-300'
+                              : 'bg-purple-500/20 text-purple-300'
+                          )}
+                        >
+                          {model.source === 'curated' ? 'Curated' : 'Manual'}
+                        </span>
+                      </div>
+                      <div className='flex items-center gap-2'>
+                        {model.source === 'curated' ? (
+                          <Button
+                            variant='ghost'
+                            size='icon'
+                            onClick={() => handleToggleBlacklist(model.id, model.blacklisted || false)}
+                            className='h-8 w-8 rounded-full border border-border/40 text-muted-foreground transition hover:text-foreground'
+                          >
+                            <Ban className='h-3.5 w-3.5' />
+                            <span className='sr-only'>
+                              {model.blacklisted ? 'Un-blacklist' : 'Blacklist'}
+                            </span>
+                          </Button>
+                        ) : (
+                          <Button
+                            variant='ghost'
+                            size='icon'
+                            onClick={() => handleDeleteManual(model.id)}
+                            className='h-8 w-8 rounded-full border border-border/40 text-destructive transition hover:text-destructive/80'
+                          >
+                            <Trash2 className='h-3.5 w-3.5' />
+                            <span className='sr-only'>Delete</span>
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className='mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground'>
+                      <div className='flex items-center gap-2 rounded-lg border border-border/40 bg-background/60 p-2'>
+                        <span className='text-xs font-semibold'>Image</span>
+                        {renderCapabilityIcon(model.supportsImageGeneration)}
+                      </div>
+                      <div className='flex items-center gap-2 rounded-lg border border-border/40 bg-background/60 p-2'>
+                        <span className='text-xs font-semibold'>TTS</span>
+                        {renderCapabilityIcon(model.supportsTTS)}
+                      </div>
+                      <div className='flex items-center gap-2 rounded-lg border border-border/40 bg-background/60 p-2'>
+                        <span className='text-xs font-semibold'>Transcribe</span>
+                        {renderCapabilityIcon(model.supportsTranscription)}
+                      </div>
+                      <div className='flex items-center gap-2 rounded-lg border border-border/40 bg-background/60 p-2'>
+                        <span className='text-xs font-semibold'>Files</span>
+                        {renderCapabilityIcon(model.supportsFileUpload)}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
         )}
       </section>
     </div>
