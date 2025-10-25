@@ -8,6 +8,7 @@ import {
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import type { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import OpenAI from 'openai';
+import type { ResponseCreateParamsNonStreaming } from 'openai/resources/responses/responses';
 
 import { getUserId } from '../lib/auth';
 import { askBaldrickToClassify, detectImageAspectRatio } from '../lib/baldrick';
@@ -27,7 +28,6 @@ import { getModelCache, isCacheStale, type ModelData } from '../repositories/mod
 import { getProviderConfig, listProviderConfigs } from '../repositories/providers';
 import { deleteConnection as removeConnection, getConnection } from '../repositories/websocket-connections';
 import { getProviderApiKey } from '../services/provider-secrets';
-import type { ResponseCreateParamsNonStreaming } from 'openai/resources/responses/responses';
 
 type ProviderModel = {
   id: string;

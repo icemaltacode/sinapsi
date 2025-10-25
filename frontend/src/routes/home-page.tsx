@@ -44,6 +44,7 @@ import {
   getPresignedUploadUrl,
   getSession,
   listSessions,
+  updateSession,
   sendMessage,
   uploadFileToS3
 } from '../lib/chat-api';
@@ -636,10 +637,36 @@ export function HomePage() {
     async (sessionId: string) => {
       setActiveSessionId(sessionId);
       setHistoryOpen(historyPinned);
-       setShowNewChatForm(false);
+      setShowNewChatForm(false);
       await ensureActiveSessionLoaded(sessionId);
     },
     [ensureActiveSessionLoaded, historyPinned]
+  );
+
+  const handleTogglePin = useCallback(
+    async (session: ChatSessionSummary) => {
+      if (!idToken) return;
+
+      const nextPinned = !session.pinned;
+
+      setSessions((prev) =>
+        prev.map((item) =>
+          item.sessionId === session.sessionId ? { ...item, pinned: nextPinned } : item
+        )
+      );
+
+      try {
+        await updateSession(idToken, session.sessionId, { pinned: nextPinned });
+      } catch (error) {
+        console.error('Failed to toggle pin state', error);
+        setSessions((prev) =>
+          prev.map((item) =>
+            item.sessionId === session.sessionId ? { ...item, pinned: session.pinned } : item
+          )
+        );
+      }
+    },
+    [idToken]
   );
 
   const handleStartSession = useCallback(async () => {
@@ -1128,21 +1155,29 @@ export function HomePage() {
         <div
           key={session.sessionId}
           className={cn(
-            'flex items-center gap-2 rounded-xl border border-transparent px-3 py-3 transition hover:border-border/40 hover:bg-background/60',
+            'flex items-center gap-3 rounded-xl border border-transparent px-3 py-3 transition hover:border-border/40 hover:bg-background/60',
             isActive && 'border-primary/60 bg-primary/10'
           )}
         >
-          <button
-            type='button'
+          <div
+            role='button'
+            tabIndex={0}
             onClick={() => {
               void handleSelectSession(session.sessionId);
               onSelect?.();
             }}
-            className='flex flex-1 items-start gap-2 text-left'
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                void handleSelectSession(session.sessionId);
+                onSelect?.();
+              }
+            }}
+            className='flex flex-1 items-start gap-2 text-left outline-none'
           >
             {session.pinned ? (
-              <span className='inline-flex h-7 w-7 items-center justify-center rounded-full border border-border/40 bg-background/70 text-primary'>
-                <Pin className='h-4 w-4' />
+              <span className='inline-flex h-6 w-6 items-center justify-center rounded-full border border-border/30 bg-background/70 text-primary'>
+                <Pin className='h-3.5 w-3.5' />
               </span>
             ) : null}
             <div className='flex-1'>
@@ -1152,21 +1187,41 @@ export function HomePage() {
               <p className='text-xs text-muted-foreground'>
                 {session.providerInstanceName} • {session.model}
               </p>
-              <p className='mt-2 text-[0.7rem] text-muted-foreground/80'>
-                Last active {formatTimestamp(session.lastInteractionAt)}
-              </p>
+              <div className='mt-2 flex items-center justify-between text-[0.7rem] text-muted-foreground/80'>
+                <span>Last active {formatTimestamp(session.lastInteractionAt)}</span>
+                <span className='flex items-center gap-1'>
+                  <Button
+                    type='button'
+                    size='icon'
+                    variant='ghost'
+                    className='h-7 w-7 rounded-full border border-border/40 text-muted-foreground transition hover:text-primary'
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      event.preventDefault();
+                      void handleTogglePin(session);
+                    }}
+                    aria-label={session.pinned ? 'Unpin conversation' : 'Pin conversation'}
+                  >
+                    {session.pinned ? <PinOff className='h-3.5 w-3.5' /> : <Pin className='h-3.5 w-3.5' />}
+                  </Button>
+                  <Button
+                    type='button'
+                    size='icon'
+                    variant='ghost'
+                    className='h-7 w-7 rounded-full border border-border/40 text-muted-foreground transition hover:text-destructive'
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      event.preventDefault();
+                      setSessionPendingDelete(session);
+                    }}
+                    aria-label='Delete conversation'
+                  >
+                    <Trash2 className='h-3.5 w-3.5' />
+                  </Button>
+                </span>
+              </div>
             </div>
-          </button>
-            <Button
-              type='button'
-              size='icon'
-              variant='ghost'
-              className='ml-2 h-8 w-8 rounded-full border border-border/40 text-muted-foreground transition hover:text-destructive'
-              onClick={() => setSessionPendingDelete(session)}
-              aria-label='Delete conversation'
-            >
-              <Trash2 className='h-4 w-4' />
-            </Button>
+          </div>
         </div>
       );
     });
@@ -1662,14 +1717,18 @@ export function HomePage() {
       {expandedImage ? (
         <Dialog
           open
-          onOpenChange={(open) => {
-            if (!open) {
-              setExpandedImage(null);
-            }
-          }}
-        >
-          <DialogContent className='max-w-[90vw] overflow-hidden p-0 sm:max-w-[80vw] md:max-w-[70vw]'>
-            <div className='flex items-center justify-between border-b border-border/20 bg-background/90 px-4 py-3'>
+      onOpenChange={(open) => {
+        if (!open) {
+          setExpandedImage(null);
+        }
+      }}
+    >
+      <DialogContent className='max-w-[90vw] overflow-hidden p-0 sm:max-w-[80vw] md:max-w-[70vw]'>
+        <DialogHeader className='sr-only'>
+          <DialogTitle>Expanded image preview</DialogTitle>
+          <DialogDescription>Full-screen view of the generated image.</DialogDescription>
+        </DialogHeader>
+        <div className='flex items-center justify-between border-b border-border/20 bg-background/90 px-4 py-3'>
               <div className='min-w-0 text-sm font-medium text-foreground'>
                 {expandedImage.prompt ? (
                   <span className='line-clamp-2'>{expandedImage.prompt}</span>
@@ -1729,6 +1788,12 @@ export function HomePage() {
         }}
       >
         <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete conversation</DialogTitle>
+            <DialogDescription>
+              This will permanently remove the conversation and its messages. This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
           <DialogHeader>
             <DialogTitle>Delete conversation</DialogTitle>
             <DialogDescription>

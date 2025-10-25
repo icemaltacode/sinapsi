@@ -8,7 +8,15 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '../ui/dropdown-menu';
-import { Sheet, SheetClose, SheetContent, SheetTrigger } from '../ui/sheet';
+import {
+  Sheet,
+  SheetClose,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger
+} from '../ui/sheet';
 import { Button } from '../ui/button';
 import { ThemeToggle } from '../theme-toggle';
 import { cn } from '../../lib/utils';
@@ -122,6 +130,10 @@ export function AppHeader({
               </Button>
             </SheetTrigger>
             <SheetContent className='bg-gradient-to-b from-[#232E60] via-[#161f3f] to-[#080b18] text-slate-100'>
+              <SheetHeader className='sr-only'>
+                <SheetTitle>Navigation menu</SheetTitle>
+                <SheetDescription>Mobile navigation links</SheetDescription>
+              </SheetHeader>
               <div className='mt-8 space-y-4'>
                 <p className='text-sm uppercase tracking-widest text-slate-300'>Navigation</p>
                 <nav className='flex flex-col gap-2 text-lg font-medium'>

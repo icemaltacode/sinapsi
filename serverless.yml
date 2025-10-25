@@ -34,6 +34,7 @@ provider:
         - GET
         - POST
         - PUT
+        - PATCH
         - DELETE
       allowCredentials: true
     authorizers:
