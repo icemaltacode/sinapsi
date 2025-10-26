@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Ban, Check, Loader2, Plus, RefreshCcw, Trash2, X } from 'lucide-react';
+import { Ban, Check, Globe, Loader2, Plus, RefreshCcw, Target, Trash2, X } from 'lucide-react';
 
 import { Button } from '../../components/ui/button';
 import {
@@ -92,6 +92,35 @@ function countPendingCapabilities(providers: ProviderCache[]): number {
     }
   }
   return pending;
+}
+
+function formatRefreshTimestamp(isoString: string | null): string {
+  if (!isoString) return 'Never refreshed';
+
+  const date = new Date(isoString);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+function getLatestRefreshTimestamp(providers: ProviderCache[]): string | null {
+  let latest: Date | null = null;
+
+  for (const provider of providers) {
+    if (provider.lastRefreshed) {
+      const timestamp = new Date(provider.lastRefreshed);
+      if (!latest || timestamp > latest) {
+        latest = timestamp;
+      }
+    }
+  }
+
+  return latest ? latest.toISOString() : null;
 }
 
 // Helper function to render capability icon
@@ -426,6 +455,7 @@ export function AdminModelsPage() {
 
   const currentProvider = providers.find((p) => p.providerId === selectedProvider);
   const models = currentProvider?.models || [];
+  const latestRefresh = getLatestRefreshTimestamp(providers);
 
   return (
     <div className='space-y-6'>
@@ -436,19 +466,25 @@ export function AdminModelsPage() {
             Manage AI model availability, blacklist unwanted models, and add custom models
           </p>
         </div>
-        <Button onClick={() => handleRefresh()} disabled={refreshing || loading}>
-          {refreshing ? (
-            <>
-              <Loader2 className='mr-2 h-4 w-4 animate-spin' />
-              Refreshing...
-            </>
-          ) : (
-            <>
-              <RefreshCcw className='mr-2 h-4 w-4' />
-              Refresh All Providers
-            </>
-          )}
-        </Button>
+        <div className='flex flex-col items-end gap-2'>
+          <Button onClick={() => handleRefresh()} disabled={refreshing || loading}>
+            {refreshing ? (
+              <>
+                <Loader2 className='mr-2 h-4 w-4 animate-spin' />
+                Refreshing...
+              </>
+            ) : (
+              <>
+                <RefreshCcw className='mr-2 h-4 w-4' />
+                Refresh All Providers
+              </>
+            )}
+          </Button>
+          <div className='flex items-center gap-1.5 rounded-full bg-blue-500/10 px-3 py-1 text-xs text-blue-400 border border-blue-500/20'>
+            <Globe className='h-3 w-3' />
+            <span>{formatRefreshTimestamp(latestRefresh)}</span>
+          </div>
+        </div>
       </section>
 
       {error ? (
@@ -496,50 +532,56 @@ export function AdminModelsPage() {
         </section>
       )}
 
-      <section className='flex items-center gap-4'>
-        <Label htmlFor='provider-select' className='text-white'>
-          Provider:
-        </Label>
-        <select
-          id='provider-select'
-          value={selectedProvider}
-          onChange={(e) => setSelectedProvider(e.target.value)}
-          className='rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring'
-        >
-          {providers.map((p) => (
-            <option key={p.providerId} value={p.providerId}>
-              {p.providerName}
-            </option>
-          ))}
-        </select>
-        <Button
-          variant='outline'
-          size='sm'
-          onClick={() => handleRefresh(selectedProvider)}
-          disabled={refreshing || loading || !selectedProvider}
-        >
-          {refreshing ? (
-            <>
-              <Loader2 className='mr-2 h-4 w-4 animate-spin' />
-              Refreshing...
-            </>
-          ) : (
-            <>
-              <RefreshCcw className='mr-2 h-4 w-4' />
-              Refresh Provider
-            </>
-          )}
-        </Button>
-        <AddManualModelDialog
-          provider={selectedProvider}
-          onAdded={(model) => {
-            setProviders((prev) =>
-              prev.map((p) =>
-                p.providerId === selectedProvider ? { ...p, models: [...p.models, model] } : p
-              )
-            );
-          }}
-        />
+      <section className='flex items-center justify-between gap-4'>
+        <div className='flex items-center gap-4'>
+          <Label htmlFor='provider-select' className='text-white'>
+            Provider:
+          </Label>
+          <select
+            id='provider-select'
+            value={selectedProvider}
+            onChange={(e) => setSelectedProvider(e.target.value)}
+            className='rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring'
+          >
+            {providers.map((p) => (
+              <option key={p.providerId} value={p.providerId}>
+                {p.providerName}
+              </option>
+            ))}
+          </select>
+          <Button
+            variant='outline'
+            size='sm'
+            onClick={() => handleRefresh(selectedProvider)}
+            disabled={refreshing || loading || !selectedProvider}
+          >
+            {refreshing ? (
+              <>
+                <Loader2 className='mr-2 h-4 w-4 animate-spin' />
+                Refreshing...
+              </>
+            ) : (
+              <>
+                <RefreshCcw className='mr-2 h-4 w-4' />
+                Refresh Provider
+              </>
+            )}
+          </Button>
+          <AddManualModelDialog
+            provider={selectedProvider}
+            onAdded={(model) => {
+              setProviders((prev) =>
+                prev.map((p) =>
+                  p.providerId === selectedProvider ? { ...p, models: [...p.models, model] } : p
+                )
+              );
+            }}
+          />
+        </div>
+        <div className='flex items-center gap-1.5 rounded-full bg-purple-500/10 px-3 py-1.5 text-xs text-purple-400 border border-purple-500/20'>
+          <Target className='h-3 w-3' />
+          <span>{formatRefreshTimestamp(currentProvider?.lastRefreshed ?? null)}</span>
+        </div>
       </section>
 
       <section className='rounded-2xl border border-border/40 bg-card/70 p-4 shadow-xl backdrop-blur'>
