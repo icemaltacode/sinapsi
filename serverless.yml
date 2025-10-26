@@ -145,6 +145,7 @@ provider:
           Resource:
             - arn:aws:lambda:${aws:region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-scheduledModelRefresh
             - arn:aws:lambda:${aws:region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-testCapabilities
+            - arn:aws:lambda:${aws:region}:${aws:accountId}:function:${self:service}-${self:provider.stage}-chatWorker
 
 custom:
   tableName: ${self:service}-table-${self:provider.stage}
@@ -201,12 +202,17 @@ functions:
 
   chatSessionMessages:
     handler: src/handlers/chat.sessionsMessages
-    timeout: 900  # 15 minutes for streaming LLM responses (max Lambda timeout)
+    timeout: 29  # Quick acknowledgment, actual work done by chatWorker
     events:
       - httpApi:
           method: POST
           path: /chat/sessions/{sessionId}/messages
           authorizer: cognitoAuth
+
+  chatWorker:
+    handler: src/handlers/chat-worker.handler
+    timeout: 900  # 15 minutes for streaming LLM responses (max Lambda timeout)
+    # No HTTP event - invoked directly by chatSessionMessages
 
   chatSessionGet:
     handler: src/handlers/chat.sessionsGet

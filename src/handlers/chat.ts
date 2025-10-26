@@ -5,6 +5,7 @@ import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand
 } from '@aws-sdk/client-apigatewaymanagementapi';
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import type { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import OpenAI from 'openai';
@@ -50,6 +51,10 @@ type ProviderEntry = {
 const WEBSOCKET_MANAGEMENT_URL = process.env.WEBSOCKET_MANAGEMENT_URL;
 const GENERATED_IMAGES_BUCKET = process.env.GENERATED_IMAGES_BUCKET;
 const USER_UPLOADS_BUCKET = process.env.USER_UPLOADS_BUCKET;
+const STAGE = process.env.STAGE || 'dev';
+const AWS_REGION = process.env.AWS_REGION || 'eu-south-1';
+
+const lambdaClient = new LambdaClient({ region: AWS_REGION });
 
 if (!WEBSOCKET_MANAGEMENT_URL) {
   throw new Error('WEBSOCKET_MANAGEMENT_URL is not configured');
@@ -539,6 +544,8 @@ const generateImageNative = async (
   }
 };
 
+// Moved to chat-worker.ts (with simpler version - TODO: merge attachment handling back)
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const mapEventsToInput = async (events: SessionEventItem[]): Promise<ChatMessage[]> => {
   const messages: ChatMessage[] = [];
 
@@ -824,18 +831,7 @@ export const sessionsUpdate: APIGatewayProxyHandlerV2 = async (event) => {
   }
 };
 
-const generateSessionTitle = async (
-  adapter: ReturnType<typeof getChatAdapter>,
-  model: string,
-  history: ChatMessage[]
-): Promise<string | undefined> => {
-  try {
-    return await adapter.generateTitle({ model, messages: history });
-  } catch (error) {
-    console.error('Failed to generate session title', error);
-    return undefined;
-  }
-};
+// generateSessionTitle moved to chat-worker.ts
 
 export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
   const sessionId = event.pathParameters?.sessionId;
@@ -1035,17 +1031,20 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
 
           // Generate title if this is the first user message
           if (!session.title) {
-            try {
-              const history = await listMessages(sessionId);
-              const userMessageCount = history.filter(
-                (event) => event.eventType === 'message' && event.role === 'user'
-              ).length;
+            const history = await listMessages(sessionId);
+            const userMessageCount = history.filter(
+              (event) => event.eventType === 'message' && event.role === 'user'
+            ).length;
 
-              if (userMessageCount === 1) {
-                const title = await generateSessionTitle(adapter, session.model, [
-                  { role: 'user', content: userPrompt },
-                  { role: 'assistant', content: `Generated image: ${userPrompt}` }
-                ]);
+            if (userMessageCount === 1) {
+              try {
+                const title = await adapter.generateTitle({
+                  model: session.model,
+                  messages: [
+                    { role: 'user', content: userPrompt },
+                    { role: 'assistant', content: `Generated image: ${userPrompt}` }
+                  ]
+                });
 
                 if (title) {
                   session = await updateSessionMetadata(session, { title });
@@ -1059,9 +1058,9 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
                     console.warn('Failed to send title via WebSocket, but saved to DB', wsError);
                   }
                 }
+              } catch (titleError) {
+                console.error('Failed to generate title for image session', titleError);
               }
-            } catch (titleError) {
-              console.error('Failed to generate title for image session', titleError);
             }
           }
         } catch (dbError) {
@@ -1100,90 +1099,42 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     const history = await listMessages(sessionId);
-    const inputMessages = await mapEventsToInput(history);
     const userMessageCount = history.filter(
       (event) => event.eventType === 'message' && event.role === 'user'
     ).length;
     const shouldGenerateTitle = !session.title && userMessageCount === 1;
 
     const assistantMessageId = randomUUID();
-    await sendToConnection(connectionId, {
-      type: 'assistant.started',
-      sessionId,
-      messageId: assistantMessageId
-    });
 
-    // Use adapter to send message and stream response
-    const streamResponse = await adapter.sendMessage({
-      model: session.model,
-      messages: inputMessages
-    });
-
-    // Stream deltas to client
-    for await (const delta of streamResponse.textStream) {
-      await sendToConnection(connectionId, {
-        type: 'assistant.delta',
-        sessionId,
-        messageId: assistantMessageId,
-        delta
-      });
-    }
-
-    // Get final response
-    const finalResponse = await streamResponse.getFinalResponse();
-    const assistantContent = finalResponse.content;
-    const outputTokens = finalResponse.outputTokens;
-    const inputTokens = finalResponse.inputTokens;
-
-    const assistantTimestamp = new Date().toISOString();
-    await saveMessage({
-      sessionId,
-      isoTimestamp: assistantTimestamp,
-      messageId: assistantMessageId,
-      role: 'assistant',
-      content: assistantContent,
-      provider: providerKey,
-      tokensIn: inputTokens,
-      tokensOut: outputTokens,
-      createdBy: providerKey
-    });
-
-    await sendToConnection(connectionId, {
-      type: 'assistant.completed',
-      sessionId,
-      messageId: assistantMessageId,
-      content: assistantContent
-    });
-
-    // Update session with new timestamp (captures new version)
-    session = await updateSessionMetadata(session, {
-      lastInteractionAt: assistantTimestamp
-    });
-
-    if (shouldGenerateTitle) {
-      const title = await generateSessionTitle(adapter, session.model, [
-        ...inputMessages,
-        {
-          role: 'assistant',
-          content: assistantContent
-        }
-      ]);
-      if (title) {
-        // Use updated session from previous update to avoid version conflict
-        session = await updateSessionMetadata(session, { title });
-        await sendToConnection(connectionId, {
-          type: 'session.title',
-          sessionId,
-          title
-        });
-      }
-    }
-
-    return ok({
+    // Invoke worker Lambda asynchronously to handle streaming
+    const workerFunctionName = `sinapsi-${STAGE}-chatWorker`;
+    const workerPayload = {
       sessionId,
       userMessageId,
-      assistantMessageId
-    });
+      assistantMessageId,
+      connectionId,
+      userId,
+      providerKey,
+      shouldGenerateTitle
+    };
+
+    await lambdaClient.send(
+      new InvokeCommand({
+        FunctionName: workerFunctionName,
+        InvocationType: 'Event', // Async invocation
+        Payload: JSON.stringify(workerPayload)
+      })
+    );
+
+    // Return 202 Accepted - actual response will be delivered via WebSocket
+    return {
+      statusCode: 202,
+      body: JSON.stringify({
+        sessionId,
+        userMessageId,
+        assistantMessageId
+      })
+    };
   } catch (error) {
     console.error('chat.sessionsMessages error', error);
     if (payload.connectionId) {
