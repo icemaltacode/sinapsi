@@ -8,10 +8,10 @@ import {
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import type { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import OpenAI from 'openai';
-import type { ResponseCreateParamsNonStreaming } from 'openai/resources/responses/responses';
 
 import { getUserId } from '../lib/auth';
 import { askBaldrickToClassify, detectImageAspectRatio } from '../lib/baldrick';
+import { getChatAdapter, type ChatMessage } from '../lib/chat-adapters';
 import type { SessionEventItem, SessionSummaryItem } from '../lib/dynamo';
 import { badRequest, ok, serverError } from '../lib/response';
 import { generatePresignedPutUrl, generatePresignedGetUrl, deleteFilesFromS3 } from '../lib/s3-helpers';
@@ -45,30 +45,7 @@ type ProviderEntry = {
   models: ProviderModel[];
 };
 
-// OpenAI Responses API types (matching SDK)
-type ResponseInputText = {
-  type: 'input_text';
-  text: string;
-};
-
-type ResponseInputImage = {
-  type: 'input_image';
-  image_url: string;
-  detail?: 'low' | 'high' | 'auto';
-};
-
-type ResponseInputFile = {
-  type: 'input_file';
-  filename: string;
-  file_data: string; // Format: "data:application/pdf;base64,{base64string}"
-};
-
-type ResponseInputContent = ResponseInputText | ResponseInputImage | ResponseInputFile;
-
-type EasyInputMessage = {
-  role: 'user' | 'assistant' | 'system' | 'developer';
-  content: string | ResponseInputContent[];
-};
+// No longer needed - using ChatMessage from chat-adapters.ts
 
 const WEBSOCKET_MANAGEMENT_URL = process.env.WEBSOCKET_MANAGEMENT_URL;
 const GENERATED_IMAGES_BUCKET = process.env.GENERATED_IMAGES_BUCKET;
@@ -562,8 +539,8 @@ const generateImageNative = async (
   }
 };
 
-const mapEventsToInput = async (events: SessionEventItem[]): Promise<EasyInputMessage[]> => {
-  const messages: EasyInputMessage[] = [];
+const mapEventsToInput = async (events: SessionEventItem[]): Promise<ChatMessage[]> => {
+  const messages: ChatMessage[] = [];
 
   for (const event of events) {
     if (event.eventType !== 'message') continue;
@@ -578,12 +555,12 @@ const mapEventsToInput = async (events: SessionEventItem[]): Promise<EasyInputMe
     }
 
     // Build multimodal content array
-    const contentParts: ResponseInputContent[] = [];
+    const contentParts: Array<{ type: 'text'; text: string } | { type: 'image'; imageUrl: string; detail?: 'low' | 'high' | 'auto' } | { type: 'document'; fileName: string; fileData: string }> = [];
 
     // Add text first if present
     if (event.content && event.content.trim()) {
       contentParts.push({
-        type: 'input_text',
+        type: 'text',
         text: event.content
       });
     }
@@ -596,10 +573,10 @@ const mapEventsToInput = async (events: SessionEventItem[]): Promise<EasyInputMe
 
       if (isImage) {
         // Images: use presigned URL
-        const presignedUrl = await generatePresignedGetUrl(attachment.fileKey, 3600); // 1 hour for OpenAI processing
+        const presignedUrl = await generatePresignedGetUrl(attachment.fileKey, 3600);
         contentParts.push({
-          type: 'input_image',
-          image_url: presignedUrl,
+          type: 'image',
+          imageUrl: presignedUrl,
           detail: 'auto'
         });
       } else if (isPdf) {
@@ -607,18 +584,16 @@ const mapEventsToInput = async (events: SessionEventItem[]): Promise<EasyInputMe
         try {
           const base64Data = await downloadAndEncodeFile(attachment.fileKey);
           contentParts.push({
-            type: 'input_file',
-            filename: attachment.fileName,
-            file_data: `data:application/pdf;base64,${base64Data}`
+            type: 'document',
+            fileName: attachment.fileName,
+            fileData: `data:application/pdf;base64,${base64Data}`
           });
         } catch (error) {
           console.error(`Failed to encode PDF ${attachment.fileName}:`, error);
           // Skip this attachment if encoding fails
         }
       } else {
-        // For other file types, we can't send them to OpenAI
-        // Just skip or log - frontend should handle this validation
-        console.warn(`Unsupported file type for OpenAI: ${attachment.fileType} (${attachment.fileName})`);
+        console.warn(`Unsupported file type: ${attachment.fileType} (${attachment.fileName})`);
       }
     }
 
@@ -659,45 +634,7 @@ const toChatMessageResponse = (message: SessionEventItem) => ({
   tokensOut: message.tokensOut
 });
 
-const extractTextFromResponse = (response: unknown) => {
-  const candidate = response as
-    | { output_text?: string[]; output?: Array<{ content?: Array<unknown> }> }
-    | undefined;
-
-  if (!candidate) {
-    return '';
-  }
-
-  if (candidate.output_text && Array.isArray(candidate.output_text)) {
-    return candidate.output_text.join('').trim();
-  }
-
-  if (candidate.output && Array.isArray(candidate.output)) {
-    return candidate.output
-      .map((block) => {
-        const content = (block as { content?: Array<unknown> }).content;
-        if (!Array.isArray(content)) return '';
-        return content
-          .map((item) => {
-            if (typeof item === 'string') return item;
-            if (item && typeof item === 'object') {
-              if ('text' in item && typeof (item as { text?: string }).text === 'string') {
-                return (item as { text: string }).text;
-              }
-              if ('content' in item && typeof (item as { content?: string }).content === 'string') {
-                return (item as { content: string }).content;
-              }
-            }
-            return '';
-          })
-          .join('');
-      })
-      .join('')
-      .trim();
-  }
-
-  return '';
-};
+// extractTextFromResponse moved to OpenAIChatAdapter in chat-adapters.ts
 
 export const providers: APIGatewayProxyHandlerV2 = async (_event) => {
   void _event;
@@ -888,27 +825,12 @@ export const sessionsUpdate: APIGatewayProxyHandlerV2 = async (event) => {
 };
 
 const generateSessionTitle = async (
-  client: OpenAI,
+  adapter: ReturnType<typeof getChatAdapter>,
   model: string,
-  history: EasyInputMessage[]
+  history: ChatMessage[]
 ): Promise<string | undefined> => {
   try {
-    const prompt: EasyInputMessage[] = [
-      {
-        role: 'system',
-        content:
-          'Generate a short, descriptive title (max 7 words) for the conversation. Respond with title only.'
-      },
-      ...history
-    ];
-
-    const response = await client.responses.create({
-      model,
-      input: prompt as unknown as ResponseCreateParamsNonStreaming['input']
-    });
-
-    const title = extractTextFromResponse(response);
-    return title ? title.replace(/["']/g, '').trim() : undefined;
+    return await adapter.generateTitle({ model, messages: history });
   } catch (error) {
     console.error('Failed to generate session title', error);
     return undefined;
@@ -962,7 +884,9 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
 
     const providerKey = session.providerId;
     const apiKey = await getProviderApiKey(providerKey);
-    const client = new OpenAI({ apiKey });
+
+    // Get chat adapter based on provider type
+    const adapter = getChatAdapter(session.providerType, apiKey);
 
     if (session.liveConnectionId !== connectionId) {
       session = await updateSessionMetadata(session, {
@@ -1012,15 +936,23 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
 
     // Check if this is an image generation request
     if (await detectImageGenerationIntent(payload.message.trim(), payload.attachments, apiKey)) {
+      // Check if the provider/model supports image generation
+      if (!adapter.supportsImageGeneration(session.model)) {
+        return badRequest(`Model ${session.model} does not support image generation`);
+      }
+
       const assistantMessageId = randomUUID();
       const userPrompt = payload.message.trim();
 
-      // Image generation runs in this handler
+      // Image generation runs in this handler (OpenAI only)
       // API Gateway may timeout after 30s, but Lambda will keep running (900s timeout)
       // Image will be delivered via WebSocket + polling on frontend
       await (async () => {
         let imageUrl: string | undefined;
         let imageGenerationError: Error | undefined;
+
+        // Create OpenAI client for image generation
+        const openaiClient = new OpenAI({ apiKey });
 
         try {
           if (supportsNativeImageGeneration(session.model)) {
@@ -1041,7 +973,7 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
                         '1024x1024';
 
             imageUrl = await generateImageNative(
-              client,
+              openaiClient,
               session.model,
               userPrompt,
               connectionId,
@@ -1057,7 +989,7 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
               messageId: assistantMessageId
             });
 
-            imageUrl = await generateImageWithDallE(client, userPrompt);
+            imageUrl = await generateImageWithDallE(openaiClient, userPrompt);
           }
         } catch (error) {
           console.error('Image generation failed', error);
@@ -1110,7 +1042,7 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
               ).length;
 
               if (userMessageCount === 1) {
-                const title = await generateSessionTitle(client, session.model, [
+                const title = await generateSessionTitle(adapter, session.model, [
                   { role: 'user', content: userPrompt },
                   { role: 'assistant', content: `Generated image: ${userPrompt}` }
                 ]);
@@ -1181,38 +1113,27 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
       messageId: assistantMessageId
     });
 
-    let assistantContent = '';
-    let outputTokens: number | undefined;
-    let inputTokens: number | undefined;
-
-    const stream = client.responses.stream({
+    // Use adapter to send message and stream response
+    const streamResponse = await adapter.sendMessage({
       model: session.model,
-      input: inputMessages as unknown as ResponseCreateParamsNonStreaming['input']
+      messages: inputMessages
     });
 
-    for await (const eventChunk of stream) {
-      if (eventChunk.type === 'response.output_text.delta') {
-        const delta = eventChunk.delta ?? '';
-        if (delta) {
-          assistantContent += delta;
-          await sendToConnection(connectionId, {
-            type: 'assistant.delta',
-            sessionId,
-            messageId: assistantMessageId,
-            delta
-          });
-        }
-      } else if (eventChunk.type === 'response.completed') {
-        const usage = eventChunk.response?.usage;
-        inputTokens = usage?.input_tokens ?? inputTokens;
-        outputTokens = usage?.output_tokens ?? outputTokens;
-      }
+    // Stream deltas to client
+    for await (const delta of streamResponse.textStream) {
+      await sendToConnection(connectionId, {
+        type: 'assistant.delta',
+        sessionId,
+        messageId: assistantMessageId,
+        delta
+      });
     }
 
-    const finalResponse = await stream.finalResponse();
-    if (!assistantContent) {
-      assistantContent = extractTextFromResponse(finalResponse);
-    }
+    // Get final response
+    const finalResponse = await streamResponse.getFinalResponse();
+    const assistantContent = finalResponse.content;
+    const outputTokens = finalResponse.outputTokens;
+    const inputTokens = finalResponse.inputTokens;
 
     const assistantTimestamp = new Date().toISOString();
     await saveMessage({
@@ -1240,7 +1161,7 @@ export const sessionsMessages: APIGatewayProxyHandlerV2 = async (event) => {
     });
 
     if (shouldGenerateTitle) {
-      const title = await generateSessionTitle(client, session.model, [
+      const title = await generateSessionTitle(adapter, session.model, [
         ...inputMessages,
         {
           role: 'assistant',

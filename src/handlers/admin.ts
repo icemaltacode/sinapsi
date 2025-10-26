@@ -422,18 +422,29 @@ export const usage: APIGatewayProxyHandlerV2 = async (event) => {
   }
 };
 
-export const refreshModels: APIGatewayProxyHandlerV2 = async () => {
+export const refreshModels: APIGatewayProxyHandlerV2 = async (event) => {
   try {
     console.log('[Admin] Manual model refresh requested - invoking async Lambda');
 
-    // Get list of providers that will be refreshed
-    const providers = await listProviderConfigs();
-    const openaiProviders = providers.filter(
-      (p) => p.status === 'active' && (p.provider.includes('openai') || p.provider.includes('gpt'))
-    );
+    // Check if a specific provider was requested via query parameter
+    const specificProviderId = event.queryStringParameters?.providerId;
 
-    const providerIds = openaiProviders.map((p) => p.provider);
-    console.log(`[Admin] Will refresh ${providerIds.length} providers: ${providerIds.join(', ')}`);
+    // Get list of active providers that will be refreshed
+    const providers = await listProviderConfigs();
+    let activeProviders = providers.filter((p) => p.status === 'active');
+
+    // If specific provider requested, filter to just that one
+    if (specificProviderId) {
+      console.log(`[Admin] Filtering to specific provider: ${specificProviderId}`);
+      activeProviders = activeProviders.filter((p) => p.provider === specificProviderId);
+
+      if (activeProviders.length === 0) {
+        return badRequest(`Provider ${specificProviderId} not found or not active`);
+      }
+    }
+
+    const providerIds = activeProviders.map((p) => p.provider);
+    console.log(`[Admin] Will refresh ${providerIds.length} provider(s): ${providerIds.join(', ')}`);
 
     // Invoke the scheduled refresh Lambda asynchronously
     const lambdaClient = new LambdaClient({});
@@ -443,7 +454,10 @@ export const refreshModels: APIGatewayProxyHandlerV2 = async () => {
       new InvokeCommand({
         FunctionName: functionName,
         InvocationType: 'Event', // Async invocation - don't wait for response
-        Payload: JSON.stringify({ manual: true }) // Indicate manual trigger
+        Payload: JSON.stringify({
+          manual: true,
+          providerIds // Pass specific provider IDs if filtered
+        })
       })
     );
 
@@ -464,12 +478,9 @@ export const getModelsCache: APIGatewayProxyHandlerV2 = async () => {
   try {
     console.log('[Admin] Fetching all model caches');
     const providers = await listProviderConfigs();
-    const openaiProviders = providers.filter((p) =>
-      p.provider.includes('openai') || p.provider.includes('gpt')
-    );
 
     const caches = await Promise.all(
-      openaiProviders.map(async (provider) => {
+      providers.map(async (provider) => {
         const cache = await getModelCache(provider.provider);
         return {
           providerId: provider.provider,

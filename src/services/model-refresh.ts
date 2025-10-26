@@ -1,13 +1,12 @@
-import OpenAI from 'openai';
-
 import { curateModelList } from '../lib/baldrick';
+import { getProviderAdapter, detectProviderType } from '../lib/provider-adapters';
 import {
   getModelCache,
   saveModelCache,
   recordModelRefreshError,
   type ModelData
 } from '../repositories/model-cache';
-import { getProviderConfig } from '../repositories/providers';
+import { getProviderConfig, listProviderConfigs } from '../repositories/providers';
 
 import { getProviderApiKey } from './provider-secrets';
 
@@ -50,51 +49,50 @@ export const refreshModelsForProvider = async (
     // Get API key
     const apiKey = await getProviderApiKey(providerId);
 
-    // Fetch raw models from OpenAI API
-    console.log(`[Model Refresh] Fetching models from OpenAI API`);
-    const client = new OpenAI({ apiKey, timeout: 30000 });
-    const response = await client.models.list();
-    rawModelIds = response.data.map((model) => model.id);
+    // Determine provider type and get appropriate adapter
+    const providerType = providerConfig.providerType || detectProviderType(providerId);
+    console.log(`[Model Refresh] Provider type: ${providerType}`);
+
+    const adapter = getProviderAdapter(providerType);
+
+    // Fetch raw models using provider adapter
+    console.log(`[Model Refresh] Fetching models from ${providerType} API`);
+    rawModelIds = await adapter.listModels(apiKey);
 
     console.log(`[Model Refresh] Fetched ${rawModelIds.length} raw models from API`);
     console.log(`[Model Refresh] Raw models: ${rawModelIds.join(', ')}`);
 
-    regexFilteredModelIds = rawModelIds.filter((id) => {
-      const lower = id.toLowerCase();
-      const hasDate = /\d{4}-\d{2}/.test(id);
-      const hasPreview = lower.includes('preview');
-      const isFineTuned = id.includes(':');
-      const isEmbedding = lower.includes('embedding');
-      const isAudio = lower.includes('tts') || lower.includes('audio');
-      const isImageOnly = lower.includes('dall-e') || lower.startsWith('sora');
-      const isModeration = lower.includes('moderation');
-      const isRealtime = lower.includes('realtime');
-
-      if (isFineTuned || isEmbedding || isAudio || isImageOnly || isModeration || isRealtime) {
-        return false;
-      }
-
-      if (hasDate || hasPreview) {
-        return false;
-      }
-
-      return true;
-    });
+    // Apply provider-specific prefiltering
+    regexFilteredModelIds = adapter.prefilterModels(rawModelIds);
 
     if (regexFilteredModelIds.length === 0) {
-      console.warn('[Model Refresh] Regex filter removed all models; falling back to raw list');
+      console.warn('[Model Refresh] Prefilter removed all models; falling back to raw list');
       regexFilteredModelIds = [...rawModelIds];
     }
 
     console.log(
-      `[Model Refresh] Regex filtered models (${rawModelIds.length} -> ${regexFilteredModelIds.length}): ${regexFilteredModelIds.join(', ')}`
+      `[Model Refresh] Filtered models (${rawModelIds.length} -> ${regexFilteredModelIds.length}): ${regexFilteredModelIds.join(', ')}`
     );
 
     // Get existing cache to preserve blacklist and manual models
     const existingCache = await getModelCache(providerId);
 
+    // Get an OpenAI API key for Baldrick's curation
+    // Baldrick uses OpenAI's GPT models regardless of which provider we're refreshing
+    const openaiProviders = await listProviderConfigs();
+    const activeOpenAI = openaiProviders.find(
+      (p) => p.status === 'active' && (p.providerType === 'openai' || p.provider.includes('openai') || p.provider.includes('gpt'))
+    );
+
+    if (!activeOpenAI) {
+      throw new Error('No active OpenAI provider found - required for model curation via Baldrick');
+    }
+
+    const baldrickApiKey = await getProviderApiKey(activeOpenAI.provider);
+    console.log(`[Model Refresh] Using OpenAI provider ${activeOpenAI.provider} for Baldrick curation`);
+
     // Use Baldrick with GPT-5 to curate the list
-    const curated = await curateModelList(regexFilteredModelIds, providerId, apiKey);
+    const curated = await curateModelList(regexFilteredModelIds, providerId, baldrickApiKey);
 
     curatedModelIds = curated.map((m) => m.model_name);
 

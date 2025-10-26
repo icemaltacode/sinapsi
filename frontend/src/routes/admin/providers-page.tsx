@@ -39,9 +39,9 @@ interface ProviderMutationResponse {
 
 const PROVIDER_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'openai', label: 'OpenAI' },
-  { value: 'copilot', label: 'Copilot' },
-  { value: 'claude', label: 'Claude' },
-  { value: 'gemini', label: 'Gemini' }
+  { value: 'copilot', label: 'Microsoft Copilot' },
+  { value: 'claude', label: 'Anthropic Claude' },
+  { value: 'gemini', label: 'Google Gemini' }
 ];
 
 const maskKey = (key: string) => {

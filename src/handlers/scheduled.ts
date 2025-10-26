@@ -10,36 +10,43 @@ const snsClient = new SNSClient({});
 const lambdaClient = new LambdaClient({});
 
 /**
- * Scheduled Lambda to refresh model cache for all active OpenAI providers
- * Runs daily via EventBridge cron
+ * Scheduled Lambda to refresh model cache for active providers
+ * Runs daily via EventBridge cron, or can be invoked manually for specific providers
  */
 export const refreshModelCache: ScheduledHandler = async (event) => {
-  console.log('[Scheduled Model Refresh] Starting daily model cache refresh');
+  console.log('[Scheduled Model Refresh] Starting model cache refresh');
   console.log('[Scheduled Model Refresh] Event:', JSON.stringify(event, null, 2));
 
   try {
     // Get all provider configs
-    const providers = await listProviderConfigs();
-    console.log(`[Scheduled Model Refresh] Found ${providers.length} total providers`);
+    const allProviders = await listProviderConfigs();
+    console.log(`[Scheduled Model Refresh] Found ${allProviders.length} total providers`);
 
-    // Filter to only active OpenAI providers
-    const openaiProviders = providers.filter(
-      (p) => p.status === 'active' && (p.provider.includes('openai') || p.provider.includes('gpt'))
-    );
+    // Check if specific providers were requested via manual invocation
+    const eventPayload = event as { manual?: boolean; providerIds?: string[] };
+    const specificProviderIds = eventPayload.providerIds;
 
-    console.log(`[Scheduled Model Refresh] Found ${openaiProviders.length} active OpenAI providers`);
+    let providersToRefresh = allProviders.filter((p) => p.status === 'active');
 
-    if (openaiProviders.length === 0) {
-      console.log('[Scheduled Model Refresh] No active OpenAI providers to refresh');
+    // If specific provider IDs were requested, filter to only those
+    if (specificProviderIds && specificProviderIds.length > 0) {
+      console.log(`[Scheduled Model Refresh] Filtering to specific providers: ${specificProviderIds.join(', ')}`);
+      providersToRefresh = providersToRefresh.filter((p) => specificProviderIds.includes(p.provider));
+    }
+
+    console.log(`[Scheduled Model Refresh] Will refresh ${providersToRefresh.length} active providers`);
+
+    if (providersToRefresh.length === 0) {
+      console.log('[Scheduled Model Refresh] No active providers to refresh');
       return;
     }
 
     const trigger: 'scheduled' | 'manual' =
-      'detail-type' in event ? 'scheduled' : (event as { manual?: boolean })?.manual ? 'manual' : 'scheduled';
+      'detail-type' in event ? 'scheduled' : eventPayload?.manual ? 'manual' : 'scheduled';
 
     // Refresh each provider
     const results = await Promise.all(
-      openaiProviders.map(async (provider) => {
+      providersToRefresh.map(async (provider) => {
         const result = await refreshModelsForProvider(provider.provider, trigger);
         return {
           providerId: provider.provider,
@@ -100,14 +107,19 @@ ${successful.map((s) => `- ${s.providerId}: ${s.modelsCount} models cached`).joi
         `[Scheduled Model Refresh] Total models cached: ${successful.reduce((sum, r) => sum + r.modelsCount, 0)}`
       );
 
+      // Get provider IDs that were successfully refreshed
+      const successfulProviderIds = successful.map((r) => r.providerId);
+
       const functionName = `sinapsi-${process.env.STAGE || 'dev'}-testCapabilities`;
-      console.log('[Scheduled Model Refresh] Invoking capability checker Lambda');
+      console.log(`[Scheduled Model Refresh] Invoking capability checker Lambda for providers: ${successfulProviderIds.join(', ')}`);
 
       await lambdaClient.send(
         new InvokeCommand({
           FunctionName: functionName,
           InvocationType: 'Event', // Async invocation
-          Payload: JSON.stringify({})
+          Payload: JSON.stringify({
+            providerIds: successfulProviderIds
+          })
         })
       );
 

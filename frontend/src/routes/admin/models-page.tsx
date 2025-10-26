@@ -174,7 +174,7 @@ export function AdminModelsPage() {
     void fetchCache();
   }, [fetchCache]);
 
-  const handleRefresh = async () => {
+  const handleRefresh = async (specificProviderId?: string) => {
     if (!idToken) return;
 
     setRefreshing(true);
@@ -207,10 +207,18 @@ export function AdminModelsPage() {
       // ===== PHASE 1: Model Curation =====
       setStatus('Sending refresh request...');
 
-      await apiRequest<RefreshResponse>('/admin/models/refresh', {
+      // Build URL with optional provider filter
+      const refreshUrl = specificProviderId
+        ? `/admin/models/refresh?providerId=${encodeURIComponent(specificProviderId)}`
+        : '/admin/models/refresh';
+
+      const refreshResponse = await apiRequest<RefreshResponse>(refreshUrl, {
         method: 'POST',
         token: idToken
       });
+
+      // Get list of providers being refreshed (from API response)
+      const providersBeingRefreshed = refreshResponse.providers || [];
 
       setStatus('Fetching models...');
 
@@ -311,7 +319,12 @@ export function AdminModelsPage() {
 
         applyProvidersUpdate(cacheResponse.providers || []);
 
-        const pending = countPendingCapabilities(cacheResponse.providers || []);
+        // Filter to only providers being refreshed
+        const providersToCheck = (cacheResponse.providers || []).filter(
+          (p) => providersBeingRefreshed.includes(p.providerId)
+        );
+
+        const pending = countPendingCapabilities(providersToCheck);
         if (capabilityProcessingTotal === 0) {
           capabilityProcessingTotal = pending;
           setCapabilityTargetCount(pending);
@@ -423,7 +436,7 @@ export function AdminModelsPage() {
             Manage AI model availability, blacklist unwanted models, and add custom models
           </p>
         </div>
-        <Button onClick={handleRefresh} disabled={refreshing || loading}>
+        <Button onClick={() => handleRefresh()} disabled={refreshing || loading}>
           {refreshing ? (
             <>
               <Loader2 className='mr-2 h-4 w-4 animate-spin' />
@@ -499,6 +512,24 @@ export function AdminModelsPage() {
             </option>
           ))}
         </select>
+        <Button
+          variant='outline'
+          size='sm'
+          onClick={() => handleRefresh(selectedProvider)}
+          disabled={refreshing || loading || !selectedProvider}
+        >
+          {refreshing ? (
+            <>
+              <Loader2 className='mr-2 h-4 w-4 animate-spin' />
+              Refreshing...
+            </>
+          ) : (
+            <>
+              <RefreshCcw className='mr-2 h-4 w-4' />
+              Refresh Provider
+            </>
+          )}
+        </Button>
         <AddManualModelDialog
           provider={selectedProvider}
           onAdded={(model) => {

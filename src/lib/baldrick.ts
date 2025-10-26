@@ -130,21 +130,34 @@ export const curateModelList = async (
   provider: string,
   apiKey: string
 ): Promise<Array<{ model_name: string; display_name: string }>> => {
+  // Provider-specific curation instructions
+  const providerGuidance = provider.toLowerCase().includes('claude')
+    ? `
+Special rules for Claude models:
+- Keep all "claude-" prefixed models that are for chat/completion
+- REMOVE: Any models marked as "legacy" or "deprecated"
+- Keep models like: claude-3-opus, claude-3-sonnet, claude-3-haiku, claude-3-5-sonnet, etc.
+- Format display names nicely: "Claude 3.5 Sonnet", "Claude 3 Opus", etc.`
+    : `
+Special rules for OpenAI models:
+- Keep base families: gpt-5, gpt-5-mini, gpt-5-pro, gpt-4o, gpt-4, gpt-3.5-turbo, etc.
+- REMOVE: Dated versions (e.g., gpt-4-0613, gpt-5-2025-08-07)
+- REMOVE: Preview/beta models (e.g., gpt-4-vision-preview)
+- Do NOT treat base 'gpt-5' as preview; only remove IDs with '-preview' or date suffixes`;
+
   const prompt = `Given these raw ${provider.toUpperCase()} API model IDs:
 ${JSON.stringify(rawModels, null, 2)}
 
 Filter and curate this list:
-1. REMOVE: Dated/snapshot versions (e.g., gpt-4-0613, gpt-5-2025-08-07, gpt-3.5-turbo-1106)
-2. REMOVE: Fine-tuned models (e.g., ft:gpt-3.5-turbo:org-name)
-3. REMOVE: Preview/beta models (e.g., gpt-4-vision-preview). Do NOT treat base 'gpt-5' as preview; only remove IDs that contain '-preview' or date suffixes.
-4. REMOVE: Deprecated models
-5. REMOVE: (THIS IS VERY IMPORTANT) - Specialty/niche models (e.g., text-embedding, whisper, tts, dall-e, search, codex, code models and so on. Anything not primarily for chat/completion.)
-6. NOTE: If present, always include: gpt-5, gpt-5-mini, gpt-5-pro, gpt-5-chat-latest
-7. NOTE: Choose only from the provided list; do not exclude base families unless they match the removal patterns.
+1. REMOVE: Fine-tuned models (e.g., ft:gpt-3.5-turbo:org-name)
+2. REMOVE: Deprecated models
+3. REMOVE: (THIS IS VERY IMPORTANT) - Specialty/niche models (e.g., text-embedding, whisper, tts, dall-e, search, codex, code models and so on. Anything not primarily for chat/completion.)
+4. NOTE: Choose only from the provided list; do not exclude base families unless they match the removal patterns.
+${providerGuidance}
 
 For each REMAINING model, provide:
-- "model_name": Exact model ID for API use (e.g., "gpt-5", "gpt-4o")
-- "display_name": Human-readable label (e.g., "GPT-5", "GPT-4o")
+- "model_name": Exact model ID for API use (e.g., "gpt-5", "claude-3-5-sonnet-20241022")
+- "display_name": Human-readable label (e.g., "GPT-5", "Claude 3.5 Sonnet")
 
 Return ONLY a valid JSON array of objects with these two fields. No markdown, no explanation.`;
 
